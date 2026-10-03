@@ -47,7 +47,7 @@ Pricing note: some salons only quote the final price after seeing the client's h
 ---
 
 ## Stack
-Python 3.12, FastAPI, SQLModel (on SQLAlchemy 2.0), Alembic, PostgreSQL, Redis, pytest, Docker Compose. Integrations: Paystack (test mode), Resend (email).
+Python 3.13, FastAPI, SQLModel (on SQLAlchemy 2.0), Alembic, PostgreSQL, Redis, pytest, Docker Compose. Integrations: Paystack (test mode), Resend (email).
 
 ## Folder structure
 ```

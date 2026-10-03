@@ -13,7 +13,8 @@
     ],
     "deny": [
       "Read(./.env)",
-      "Read(./.env.*)",
+      "Read(./.env.local)",
+      "Read(./.env.production)",
       "Bash(git push --force:*)",
       "Bash(alembic downgrade base:*)"
     ]
