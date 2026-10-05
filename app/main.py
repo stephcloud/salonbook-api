@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1 import auth
 from app.core.config import settings
 
 app = FastAPI(title="SalonBook API")
@@ -8,10 +9,12 @@ app = FastAPI(title="SalonBook API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+app.include_router(auth.router, prefix="/api/v1")
 
 
 @app.get("/health")
