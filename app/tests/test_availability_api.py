@@ -1,5 +1,5 @@
 import uuid
-from datetime import time
+from datetime import date, time
 from typing import Any
 
 import pytest
@@ -287,6 +287,53 @@ async def test_db_rejects_malformed_rule(
     stylist = await make_stylist(db_session, salon)
     base: dict[str, Any] = {"start_time": time(9), "end_time": time(17)}
     db_session.add(AvailabilityRule(stylist_id=stylist.id, **{**base, **fields}))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_too_many_rules_rejected(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _, headers, salon = await owner_and_salon(db_session)
+    stylist = await make_stylist(db_session, salon)
+    rules = [day_off(date.fromordinal(740000 + i).isoformat()) for i in range(201)]
+    resp = await db_client.put(url(stylist), json={"rules": rules}, headers=headers)
+    assert resp.status_code == 422
+    assert await stored(db_session, stylist) == []
+
+
+async def test_stylist_without_salon_404(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _, headers, _ = await owner_and_salon(db_session)
+    orphan, orphan_headers = await make_user(db_session, UserRole.STYLIST)
+    assert orphan.salon_id is None
+    body = {"rules": []}
+    for who in (headers, orphan_headers):
+        put = await db_client.put(url(orphan), json=body, headers=who)
+        get = await db_client.get(url(orphan), headers=who)
+        assert put.status_code == get.status_code == 404
+
+
+async def test_db_rejects_duplicate_day_off_but_allows_other_stylists(
+    db_session: AsyncSession,
+) -> None:
+    _, _, salon = await owner_and_salon(db_session)
+    first = await make_stylist(db_session, salon)
+    second = await make_stylist(db_session, salon)
+    day = date(2026, 12, 25)
+    db_session.add(
+        AvailabilityRule(stylist_id=first.id, kind=RuleKind.DAY_OFF, off_date=day)
+    )
+    db_session.add(
+        AvailabilityRule(stylist_id=second.id, kind=RuleKind.DAY_OFF, off_date=day)
+    )
+    await db_session.commit()  # same date for a different stylist is fine
+
+    db_session.add(
+        AvailabilityRule(stylist_id=first.id, kind=RuleKind.DAY_OFF, off_date=day)
+    )
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
