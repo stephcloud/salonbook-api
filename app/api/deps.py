@@ -1,8 +1,9 @@
 import uuid
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from typing import Annotated, Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,3 +46,19 @@ def require_role(*roles: UserRole) -> Callable[..., Coroutine[Any, Any, User]]:
         return user
 
     return role_checker
+
+
+@dataclass
+class Pagination:
+    limit: int
+    offset: int
+
+
+def get_pagination(
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
+) -> Pagination:
+    return Pagination(limit=limit, offset=offset)
+
+
+PaginationDep = Annotated[Pagination, Depends(get_pagination)]
