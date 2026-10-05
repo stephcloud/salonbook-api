@@ -81,6 +81,21 @@ alembic/               # migrations
 - Redis: use for caching, rate limiting, sessions; always set a TTL.
 - Profile images and files go to object storage (S3/Cloudinary). Store only the URL or key in Postgres.
 
+
+## Security rules (always follow)
+- Every endpoint is protected by default. A route is public only if the task says so.
+- Every route that takes a resource ID must check ownership or role before reading or changing it. Add a test where user A tries to access user B's data.
+- Passwords: Argon2 via pwdlib[argon2]. Never log or return passwords, hashes, tokens, or API keys.
+- JWTs: PyJWT, short expiry (exp), signed with SECRET_KEY from settings. Login errors are generic ("invalid credentials").
+- Public registration allows only client and owner. Stylists are created by a salon owner.
+- Validate all input with Pydantic (types, lengths, enums, EmailStr). Response models must never include password_hash.
+- Never build SQL from strings. Use SQLModel/SQLAlchemy queries only.
+- CORS: explicit allow-list from CORS_ORIGINS, never *.
+- Paystack: verify x-paystack-signature on the raw body, handle webhooks idempotently, take amounts from the database (never from the request).
+- Unpaid pending bookings expire after 15 minutes.
+- Do not add dependencies without asking. Run pip-audit before each deploy.
+- Use the security-reviewer subagent after auth, after each new resource, and after payments.
+
 ## Rules for Claude
 - Never read or edit `.env`. Update `.env.example` when adding a variable.
 - Never edit an existing Alembic migration that has been committed; create a new one.
