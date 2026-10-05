@@ -18,5 +18,6 @@
       "Bash(git push --force:*)",
       "Bash(alembic downgrade base:*)"
     ]
+      },
+  "attribution": { "commit": "", "pr": "" }
   }
-}
