@@ -3,8 +3,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.deps import PaginationDep, SessionDep, require_role
+from app.api.deps import CurrentUser, PaginationDep, SessionDep, require_role
+from app.models.availability_rule import AvailabilityRule
 from app.models.user import User, UserRole
+from app.schemas.availability import (
+    AvailabilityResponse,
+    AvailabilityRuleResponse,
+    AvailabilityUpdate,
+)
 from app.schemas.stylist import (
     PublicStylistResponse,
     StylistCreate,
@@ -12,6 +18,7 @@ from app.schemas.stylist import (
     StylistServicesResponse,
     StylistServicesUpdate,
 )
+from app.services import availability as availability_service
 from app.services import stylists as stylist_service
 
 router = APIRouter(tags=["stylists"])
@@ -52,3 +59,34 @@ async def set_stylist_services(
         session, stylist_id, owner, data.service_ids
     )
     return StylistServicesResponse(stylist_id=stylist_id, service_ids=service_ids)
+
+
+def _availability_response(
+    stylist_id: uuid.UUID, rules: list[AvailabilityRule]
+) -> AvailabilityResponse:
+    return AvailabilityResponse(
+        stylist_id=stylist_id,
+        rules=[AvailabilityRuleResponse.model_validate(r) for r in rules],
+    )
+
+
+# The stylist themself or their salon's owner (checked in the service).
+@router.get("/stylists/{stylist_id}/availability", response_model=AvailabilityResponse)
+async def get_availability(
+    stylist_id: uuid.UUID, session: SessionDep, user: CurrentUser
+) -> AvailabilityResponse:
+    rules = await availability_service.get_availability(session, stylist_id, user)
+    return _availability_response(stylist_id, rules)
+
+
+@router.put("/stylists/{stylist_id}/availability", response_model=AvailabilityResponse)
+async def set_availability(
+    stylist_id: uuid.UUID,
+    data: AvailabilityUpdate,
+    session: SessionDep,
+    user: CurrentUser,
+) -> AvailabilityResponse:
+    rules = await availability_service.set_availability(
+        session, stylist_id, user, data.rules
+    )
+    return _availability_response(stylist_id, rules)
