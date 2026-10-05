@@ -23,7 +23,13 @@ def find_conflict(rules: Sequence[AvailabilityRuleInput]) -> str | None:
         for b in timed[i + 1 :]:
             if a.kind != b.kind or a.weekday != b.weekday:
                 continue
-            assert a.start_time and a.end_time and b.start_time and b.end_time
+            if (
+                a.start_time is None
+                or a.end_time is None
+                or b.start_time is None
+                or b.end_time is None
+            ):
+                continue  # unreachable for validated input; timed rules have times
             if a.start_time < b.end_time and b.start_time < a.end_time:
                 return f"overlapping {a.kind.value} rules on weekday {a.weekday}"
     dates = [r.off_date for r in rules if r.kind == RuleKind.DAY_OFF]
@@ -33,10 +39,22 @@ def find_conflict(rules: Sequence[AvailabilityRuleInput]) -> str | None:
 
 
 async def _get_editable_stylist(
-    session: AsyncSession, stylist_id: uuid.UUID, user: User
+    session: AsyncSession, stylist_id: uuid.UUID, user: User, lock: bool = False
 ) -> User:
-    """The stylist themself or the owner of their salon may edit; others get 403."""
-    stylist = await session.get(User, stylist_id)
+    """The stylist themself or the owner of their salon may edit; others get 403.
+
+    With `lock`, the stylist row is read fresh under FOR NO KEY UPDATE, so the checks
+    reflect the locked row. That mode still serializes concurrent replaces but does
+    not block foreign-key checks from other tables (FOR KEY SHARE).
+    """
+    stmt = (
+        select(User)
+        .where(User.id == stylist_id)
+        .execution_options(populate_existing=True)
+    )
+    if lock:
+        stmt = stmt.with_for_update(key_share=True)
+    stylist = (await session.execute(stmt)).scalar_one_or_none()
     if stylist is None or stylist.role != UserRole.STYLIST or stylist.salon_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="stylist not found"
@@ -85,10 +103,9 @@ async def set_availability(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=conflict
         )
-    # Serialize concurrent replaces for this stylist.
-    await session.execute(
-        select(User.id).where(User.id == stylist_id).with_for_update()
-    )
+    # Serialize concurrent replaces for this stylist, then re-check under the lock:
+    # the stylist may have been deleted or moved since the unlocked check above.
+    await _get_editable_stylist(session, stylist_id, user, lock=True)
     await session.execute(
         delete(AvailabilityRule).where(AvailabilityRule.stylist_id == stylist_id)
     )

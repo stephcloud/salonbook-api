@@ -44,6 +44,14 @@ class AvailabilityRule(SQLModel, table=True):
             name="ck_availability_rules_shape_matches_kind",
         ),
         Index("ix_availability_rules_stylist_id_weekday", "stylist_id", "weekday"),
+        # A date can be a day off only once per stylist.
+        Index(
+            "uq_availability_rules_stylist_id_off_date",
+            "stylist_id",
+            "off_date",
+            unique=True,
+            postgresql_where=text("kind = 'day_off'"),
+        ),
     )
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
