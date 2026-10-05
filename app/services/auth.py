@@ -26,7 +26,7 @@ async def get_user_by_email(session: AsyncSession, email: str) -> User | None:
 async def register_user(session: AsyncSession, data: UserCreate) -> User:
     email = data.email.lower()
     if await get_user_by_email(session, email):
-        raise _email_taken()
+        raise email_taken()
     user = User(
         name=data.name,
         email=email,
@@ -38,7 +38,7 @@ async def register_user(session: AsyncSession, data: UserCreate) -> User:
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise _email_taken() from None
+        raise email_taken() from None
     await session.refresh(user)
     return user
 
@@ -53,7 +53,7 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
     return user
 
 
-def _email_taken() -> HTTPException:
+def email_taken() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT, detail="email already registered"
     )
