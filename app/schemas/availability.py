@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -63,3 +63,11 @@ class AvailabilityRuleResponse(BaseModel):
 class AvailabilityResponse(BaseModel):
     stylist_id: uuid.UUID
     rules: list[AvailabilityRuleResponse]
+
+
+class SlotsResponse(BaseModel):
+    """Bookable start times (salon-local, with UTC offset), earliest first."""
+
+    stylist_id: uuid.UUID
+    service_id: uuid.UUID
+    slots: list[datetime]
