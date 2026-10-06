@@ -1,15 +1,23 @@
 import uuid
+from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
-from app.api.deps import CurrentUser, PaginationDep, SessionDep, require_role
+from app.api.deps import (
+    CurrentUser,
+    PaginationDep,
+    SessionDep,
+    get_current_user,
+    require_role,
+)
 from app.models.availability_rule import AvailabilityRule
 from app.models.user import User, UserRole
 from app.schemas.availability import (
     AvailabilityResponse,
     AvailabilityRuleResponse,
     AvailabilityUpdate,
+    SlotsResponse,
 )
 from app.schemas.stylist import (
     PublicStylistResponse,
@@ -19,6 +27,7 @@ from app.schemas.stylist import (
     StylistServicesUpdate,
 )
 from app.services import availability as availability_service
+from app.services import slots as slot_service
 from app.services import stylists as stylist_service
 
 router = APIRouter(tags=["stylists"])
@@ -90,3 +99,19 @@ async def set_availability(
         session, stylist_id, user, data.rules
     )
     return _availability_response(stylist_id, rules)
+
+
+# Any signed-in user: it only reveals free start times, not who booked them.
+@router.get(
+    "/stylists/{stylist_id}/slots",
+    response_model=SlotsResponse,
+    dependencies=[Depends(get_current_user)],
+)
+async def get_slots(
+    stylist_id: uuid.UUID,
+    session: SessionDep,
+    service_id: Annotated[uuid.UUID, Query()],
+    day: Annotated[date, Query(alias="date")],
+) -> SlotsResponse:
+    slots = await slot_service.get_slots(session, stylist_id, service_id, day)
+    return SlotsResponse(stylist_id=stylist_id, service_id=service_id, slots=slots)

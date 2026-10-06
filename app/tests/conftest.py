@@ -58,6 +58,8 @@ async def db_engine() -> AsyncIterator[AsyncEngine]:
         )
     async with engine.begin() as conn:
         await conn.run_sync(metadata.drop_all)
+        # bookings' exclusion constraint needs btree_gist (migration 0006 does this too).
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
         await conn.run_sync(metadata.create_all)
     yield engine
     async with engine.begin() as conn:

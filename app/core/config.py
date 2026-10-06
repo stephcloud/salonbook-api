@@ -2,7 +2,7 @@ import json
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     PORT: int = 8000
+    # Salon local time as a fixed UTC offset (default WAT, UTC+1, no DST). Availability
+    # rules are stored as local wall-clock times; bookings are stored in UTC.
+    SALON_UTC_OFFSET_MINUTES: int = Field(default=60, ge=-720, le=840)
     PAYSTACK_SECRET_KEY: str = ""
     RESEND_API_KEY: str = ""
 
