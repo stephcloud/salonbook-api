@@ -1,0 +1,4 @@
+[lint.per-file-ignores]
+# Model imports register tables on SQLModel.metadata for Alembic. Ruff must not remove them.
+# RUF100 is ignored too, so the intentional "# noqa: F401" is not flagged as unused.
+"app/db/base.py" = ["F401", "RUF100"]
