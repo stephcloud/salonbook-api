@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking, BookingStatus
@@ -24,6 +24,13 @@ MAX_PENDING_PER_CLIENT = 3
 # Postgres sqlstates.
 EXCLUSION_VIOLATION = "23P01"
 FOREIGN_KEY_VIOLATION = "23503"
+SERIALIZATION_FAILURE = "40001"
+DEADLOCK_DETECTED = "40P01"
+# Losing a race for a slot. Two simultaneous inserts of the same range can end in
+# an exclusion violation, or in a deadlock the server resolves by aborting one.
+LOST_RACE_STATES = frozenset(
+    {EXCLUSION_VIOLATION, SERIALIZATION_FAILURE, DEADLOCK_DETECTED}
+)
 
 
 def slot_unavailable() -> HTTPException:
@@ -44,12 +51,16 @@ def too_many_pending() -> HTTPException:
     )
 
 
-def sqlstate(exc: IntegrityError) -> str | None:
+def sqlstate(exc: DBAPIError) -> str | None:
     return getattr(exc.orig, "sqlstate", None)
 
 
-def is_overlap(exc: IntegrityError) -> bool:
+def is_overlap(exc: DBAPIError) -> bool:
     return sqlstate(exc) == EXCLUSION_VIOLATION
+
+
+def is_lost_race(exc: DBAPIError) -> bool:
+    return sqlstate(exc) in LOST_RACE_STATES
 
 
 def _expiry_cutoff(now: datetime) -> datetime:
@@ -77,7 +88,9 @@ async def expire_pending_bookings(
             Booking.created_at < _expiry_cutoff(now),
         )
         .order_by(Booking.id)
-        .with_for_update()
+        # NO KEY UPDATE: only `status` changes, and a plain FOR UPDATE would block
+        # the FOR KEY SHARE that rows referencing a booking (payments) take.
+        .with_for_update(key_share=True)
     )
     if stylist_id is not None:
         lapsed = lapsed.where(Booking.stylist_id == stylist_id)
@@ -150,6 +163,8 @@ async def create_booking(
     try:
         return await _create_booking(session, client, data, now, tz)
     except HTTPException:
+        # Rolling back expires the loaded client, stylist and service: don't read
+        # their attributes after a rejection.
         await session.rollback()
         raise
 
@@ -168,6 +183,9 @@ async def _create_booking(
     local_start = starts_at.astimezone(tz)
 
     # Serialize this client's concurrent requests so the pending cap can't be raced.
+    # Lock order everywhere: the client row first, then booking rows in id order.
+    # Any future path (cancel, reschedule, webhook) must follow it to stay
+    # deadlock-free.
     await session.execute(
         select(User.id).where(User.id == client.id).with_for_update(key_share=True)
     )
@@ -197,9 +215,9 @@ async def _create_booking(
     session.add(booking)
     try:
         await session.commit()
-    except IntegrityError as exc:
+    except DBAPIError as exc:
         await session.rollback()
-        if is_overlap(exc):
+        if is_lost_race(exc):
             raise slot_unavailable() from None
         if sqlstate(exc) == FOREIGN_KEY_VIOLATION:
             raise not_found() from None  # stylist or service deleted mid-request

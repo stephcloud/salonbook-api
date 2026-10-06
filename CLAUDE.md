@@ -8,7 +8,7 @@
 - Two-week MVP: auth with roles + ownership checks, 5-7 tables, migrations + seed script, ONE hard part with 3 tests, 15+ tests total. Log progress in `LOG.md` daily.
 
 ## The hard part (build and test this first)
-1. **No overlapping bookings, enforced in the database.** Variable service durations. Use a Postgres exclusion constraint on (`stylist_id`, time range) in a hand-written Alembic migration (needs `btree_gist`). Only active bookings (not cancelled) block a slot.
+1. **No overlapping bookings, enforced in the database.** Variable service durations. Use a Postgres exclusion constraint on (`stylist_id`, time range) in a hand-written Alembic migration (needs `btree_gist`). Only pending and confirmed bookings block a slot.
 2. **Deposit and refund policy applied exactly once.** Full refund if cancelled more than 24h before start, none after (hours configurable per salon).
 3. **Idempotent payments.** Unique Paystack reference; replaying the same webhook must not double-confirm or double-refund.
 
@@ -31,7 +31,7 @@ Pricing note: some salons only quote the final price after seeing the client's h
 - Services: POST/GET /salons/{id}/services, PATCH/DELETE /services/{id}
 - Stylists: POST /salons/{id}/stylists, PUT /stylists/{id}/services, PUT /stylists/{id}/availability
 - Availability: GET /stylists/{id}/slots?service_id=&date=
-- Bookings: POST /bookings (creates pending + Paystack init), GET /bookings (own), POST /bookings/{id}/cancel, POST /bookings/{id}/reschedule
+- Bookings: POST /bookings (clients only; re-checks the slot, creates a pending booking, caps a client at 3 unexpired pending bookings, cancels the stylist's lapsed pending bookings in the same transaction; Paystack init and the payments row come in the payments step), GET /bookings (own), POST /bookings/{id}/cancel, POST /bookings/{id}/reschedule
 - Payments: POST /payments/webhook (Paystack, verify signature)
 
 ## Environment variables (names only, never values)
