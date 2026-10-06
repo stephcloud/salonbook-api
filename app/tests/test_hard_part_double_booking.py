@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.booking import Booking, BookingStatus
-from app.models.user import User, UserRole
+from app.models.user import UserRole
 from app.services import bookings as booking_service
 from app.services.bookings import slot_unavailable
 from app.tests.test_bookings_api import (
