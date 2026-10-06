@@ -16,9 +16,11 @@ from app.models.user import User, UserRole
 from app.schemas.booking import BookingCreate
 from app.services import bookings as booking_service
 from app.services.bookings import (
+    MAX_PENDING_PER_CLIENT,
     PENDING_EXPIRY_MINUTES,
     create_booking,
     expire_pending_bookings,
+    too_many_pending,
 )
 from app.tests.test_salons_api import make_user
 from app.tests.test_slots import (
@@ -222,7 +224,9 @@ async def test_concurrent_expiry_runs_cancel_each_booking_exactly_once(
             await session.commit()
             return cancelled
 
-    counts = await asyncio.gather(*(run() for _ in range(4)))
+    counts = await asyncio.wait_for(
+        asyncio.gather(*(run() for _ in range(4))), timeout=30
+    )
 
     assert sum(counts) == 5  # no booking handled twice, none missed, no deadlock
     db_session.expire_all()
@@ -248,21 +252,26 @@ async def test_slot_list_shows_the_slot_again_once_the_job_has_run(
 # --- pending cap counts only unexpired pending bookings ---
 
 
-async def test_cap_blocks_the_fourth_unexpired_pending_booking(
+async def test_cap_blocks_the_next_unexpired_pending_booking(
     db_session: AsyncSession,
 ) -> None:
     stylist, service = await open_stylist(db_session)
     client = await new_client(db_session)
-    for hhmm in ("09:00", "10:00", "11:00"):
+    for i in range(MAX_PENDING_PER_CLIENT):
         await add_booking(
-            db_session, stylist, service, client, hhmm, age=timedelta(minutes=1)
+            db_session,
+            stylist,
+            service,
+            client,
+            f"{9 + i:02d}:00",
+            age=timedelta(minutes=1),
         )
 
     with pytest.raises(HTTPException) as exc:
-        await book(db_session, client, stylist, service, "14:00")
+        await book(db_session, client, stylist, service, "16:00")
 
     assert exc.value.status_code == 409
-    assert "3 unpaid pending bookings" in exc.value.detail
+    assert exc.value.detail == too_many_pending().detail
 
 
 async def test_cap_ignores_lapsed_confirmed_and_other_clients_bookings(
@@ -407,3 +416,27 @@ async def test_service_deleted_mid_request_is_404_not_500(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "not found"
+
+
+async def test_expiry_does_not_block_foreign_key_checks_on_booking_rows(
+    db_engine: AsyncEngine, db_session: AsyncSession
+) -> None:
+    """The cleanup locks FOR NO KEY UPDATE, so a row that references a booking
+    (a payment, later) can still take its FOR KEY SHARE while a cleanup is in flight.
+    A plain FOR UPDATE would make this lock attempt fail."""
+    stylist, service = await open_stylist(db_session)
+    client = await new_client(db_session)
+    lapsed = await add_booking(
+        db_session, stylist, service, client, "10:00", age=LAPSED
+    )
+    lapsed_id = lapsed.id
+    maker = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with maker() as cleaning, maker() as referencing:
+        assert await expire_pending_bookings(cleaning, NOW) == 1  # uncommitted
+        await referencing.execute(
+            select(Booking.id)
+            .where(Booking.id == lapsed_id)
+            .with_for_update(read=True, key_share=True, nowait=True)  # FOR KEY SHARE
+        )
+        await cleaning.rollback()

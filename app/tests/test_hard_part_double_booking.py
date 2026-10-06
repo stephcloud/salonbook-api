@@ -10,16 +10,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
 import pytest
-from httpx import AsyncClient, Response
+from httpx import AsyncClient
 from sqlalchemy import select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.booking import Booking, BookingStatus
 from app.models.user import UserRole
 from app.services import bookings as booking_service
-from app.services.bookings import slot_unavailable
+from app.services.bookings import LOST_RACE_STATES, sqlstate
 from app.tests.test_bookings_api import (
     UNAVAILABLE,
     URL,
@@ -33,7 +33,8 @@ from app.tests.test_slots import upcoming
 from app.tests.test_stylists_api import make_stylist
 
 CONSTRAINT = "ex_bookings_stylist_id_no_overlap"
-RACE_TIMEOUT_SECONDS = 20
+RACE_TIMEOUT_SECONDS = 15
+BARRIER_TIMEOUT_SECONDS = 5
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +58,7 @@ async def test_two_clients_booking_the_same_slot_at_the_same_moment_exactly_one_
     would only test the re-check. The wrapper runs the real get_slots (the slot
     looks free to both) and then parks on a two-party barrier, so neither request
     can reach its INSERT until both have seen the slot free. The second INSERT then
-    blocks on the first transaction and is rejected by the exclusion constraint.
+    blocks on the first transaction and is rejected by the database.
     """
     _, stylist, service = await open_stylist(db_session)
     client_a, headers_a = await client_with_headers(db_session)
@@ -67,16 +68,29 @@ async def test_two_clients_booking_the_same_slot_at_the_same_moment_exactly_one_
 
     barrier = asyncio.Barrier(2)
     real_get_slots = booking_service.get_slots
-    reached_barrier = 0
 
     async def get_slots_then_wait(*args: Any, **kwargs: Any) -> Any:
-        nonlocal reached_barrier
         slots = await real_get_slots(*args, **kwargs)
-        reached_barrier += 1
-        await barrier.wait()
+        try:
+            async with asyncio.timeout(BARRIER_TIMEOUT_SECONDS):
+                await barrier.wait()
+        except (TimeoutError, asyncio.BrokenBarrierError):
+            # Fail with the cause instead of a bare timeout that hides a 4xx/5xx.
+            raise AssertionError(
+                "the other request never reached the slot re-check"
+            ) from None
         return slots
 
+    # Record why the database turned the loser away.
+    real_is_lost_race = booking_service.is_lost_race
+    rejections: list[str | None] = []
+
+    def spy_is_lost_race(exc: DBAPIError) -> bool:
+        rejections.append(sqlstate(exc))
+        return real_is_lost_race(exc)
+
     monkeypatch.setattr(booking_service, "get_slots", get_slots_then_wait)
+    monkeypatch.setattr(booking_service, "is_lost_race", spy_is_lost_race)
 
     resp_a, resp_b = await asyncio.wait_for(
         asyncio.gather(
@@ -86,11 +100,15 @@ async def test_two_clients_booking_the_same_slot_at_the_same_moment_exactly_one_
         timeout=RACE_TIMEOUT_SECONDS,
     )
 
-    assert reached_barrier == 2  # both saw the slot free: not serialized
-    assert sorted([resp_a.status_code, resp_b.status_code]) == [201, 409]
-    winner, winner_id, loser_id = _split((resp_a, id_a), (resp_b, id_b))
-    loser = resp_a if resp_a is not winner else resp_b
-    assert loser.json()["detail"] == slot_unavailable().detail == UNAVAILABLE
+    outcomes = [(resp_a, id_a), (resp_b, id_b)]
+    assert sorted(r.status_code for r, _ in outcomes) == [201, 409]
+    ((winner, winner_id),) = [o for o in outcomes if o[0].status_code == 201]
+    ((loser, _),) = [o for o in outcomes if o[0].status_code == 409]
+    assert loser.json()["detail"] == UNAVAILABLE
+    # The 409 came from the database (exclusion violation, or the deadlock Postgres
+    # can use to abort one of two simultaneous inserts), not from the re-check.
+    assert len(rejections) == 1
+    assert rejections[0] in LOST_RACE_STATES
 
     db_session.expire_all()
     rows = list((await db_session.execute(select(Booking))).scalars())
@@ -100,22 +118,13 @@ async def test_two_clients_booking_the_same_slot_at_the_same_moment_exactly_one_
     assert stored.status == BookingStatus.PENDING
     assert stored.client_id == winner_id
     assert str(stored.id) == winner.json()["id"]
-    assert stored.client_id != loser_id
-
-
-def _split(
-    first: tuple[Response, uuid.UUID], second: tuple[Response, uuid.UUID]
-) -> tuple[Response, uuid.UUID, uuid.UUID]:
-    """Return (winning response, winning client id, losing client id)."""
-    if first[0].status_code == 201:
-        return first[0], first[1], second[1]
-    return second[0], second[1], first[1]
 
 
 # --- database level: the constraint alone, no service code ---
 
 START = datetime(2026, 10, 12, 10, 0, tzinfo=UTC)
 
+# Plain SQL: relies on the `bookingstatus` enum type name and gen_random_uuid() (PG13+).
 INSERT = text(
     "INSERT INTO bookings (id, client_id, stylist_id, service_id, starts_at, ends_at,"
     " status) VALUES (gen_random_uuid(), :client_id, :stylist_id, :service_id,"
@@ -132,7 +141,7 @@ class Ids(NamedTuple):
     client: uuid.UUID
 
 
-async def _fixtures(db_session: AsyncSession) -> Ids:
+async def _seed(db_session: AsyncSession) -> Ids:
     _, _, salon = await owner_and_salon(db_session)
     stylist = await make_stylist(db_session, salon)
     other = await make_stylist(db_session, salon)
@@ -175,7 +184,7 @@ async def count_rows(session: AsyncSession, stylist_id: uuid.UUID) -> int:
 async def test_database_constraint_alone_rejects_an_overlapping_insert(
     db_session: AsyncSession, second_status: str
 ) -> None:
-    ids = await _fixtures(db_session)
+    ids = await _seed(db_session)
     await raw_insert(db_session, ids, 0)  # 10:00-11:00
 
     with pytest.raises(IntegrityError) as exc:
@@ -188,7 +197,7 @@ async def test_database_constraint_alone_rejects_an_overlapping_insert(
 
 
 async def test_raw_back_to_back_insert_is_accepted(db_session: AsyncSession) -> None:
-    ids = await _fixtures(db_session)
+    ids = await _seed(db_session)
     await raw_insert(db_session, ids, 0)  # 10:00-11:00
 
     await raw_insert(db_session, ids, 60)  # 11:00-12:00
@@ -200,7 +209,7 @@ async def test_raw_back_to_back_insert_is_accepted(db_session: AsyncSession) -> 
 async def test_raw_overlapping_insert_with_cancelled_status_is_accepted(
     db_session: AsyncSession,
 ) -> None:
-    ids = await _fixtures(db_session)
+    ids = await _seed(db_session)
     await raw_insert(db_session, ids, 0)
 
     await raw_insert(db_session, ids, 30, status="cancelled")
@@ -211,7 +220,7 @@ async def test_raw_overlapping_insert_with_cancelled_status_is_accepted(
 async def test_raw_overlapping_insert_for_a_different_stylist_is_accepted(
     db_session: AsyncSession,
 ) -> None:
-    ids = await _fixtures(db_session)
+    ids = await _seed(db_session)
     await raw_insert(db_session, ids, 0)
 
     await raw_insert(db_session, ids, 0, stylist_id=ids.other_stylist)

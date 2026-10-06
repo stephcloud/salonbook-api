@@ -1,11 +1,12 @@
 import asyncio
+import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -16,7 +17,12 @@ from app.models.service import Service
 from app.models.stylist_service import StylistService
 from app.models.user import User, UserRole
 from app.services import bookings as booking_service
-from app.services.bookings import MAX_PENDING_PER_CLIENT, is_overlap
+from app.services.bookings import (
+    MAX_PENDING_PER_CLIENT,
+    is_lost_race,
+    is_overlap,
+    too_many_pending,
+)
 from app.tests.test_salons_api import make_user
 from app.tests.test_services_api import make_service, owner_and_salon
 from app.tests.test_slots import WAT, add_rules, lunch, setup_stylist, upcoming, working
@@ -31,7 +37,7 @@ def _pin_salon_offset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def body(
-    stylist: User, service_id: Any, day: date, hhmm: str = "10:00"
+    stylist: User, service_id: uuid.UUID, day: date, hhmm: str = "10:00"
 ) -> dict[str, str]:
     return {
         "stylist_id": str(stylist.id),
@@ -65,7 +71,7 @@ async def bookings_in_db(db_session: AsyncSession) -> list[Booking]:
 async def insert_booking(
     db_session: AsyncSession,
     stylist: User,
-    service_id: Any,
+    service_id: uuid.UUID,
     client: User,
     day: date,
     hhmm: str,
@@ -191,6 +197,7 @@ async def test_service_the_stylist_does_not_offer_is_404(
     )
 
     assert resp.status_code == 404
+    assert await bookings_in_db(db_session) == []
 
 
 async def test_service_from_another_salon_is_404_even_if_linked(
@@ -336,6 +343,7 @@ async def test_day_off_is_409(db_client: AsyncClient, db_session: AsyncSession) 
     )
 
     assert resp.status_code == 409
+    assert resp.json()["detail"] == UNAVAILABLE
 
 
 async def test_overlapping_an_existing_booking_is_409_and_back_to_back_is_ok(
@@ -414,14 +422,26 @@ class _Orig:
         self.sqlstate = sqlstate
 
 
-def test_only_exclusion_violations_are_treated_as_overlaps() -> None:
-    def err(sqlstate: str | None) -> IntegrityError:
-        return IntegrityError("stmt", {}, _Orig(sqlstate))  # type: ignore[arg-type]
+def _err(sqlstate: str | None) -> DBAPIError:
+    return DBAPIError("stmt", {}, _Orig(sqlstate))  # type: ignore[arg-type]
 
-    assert is_overlap(err("23P01"))
-    assert not is_overlap(err("23503"))  # foreign key violation
-    assert not is_overlap(err("23505"))  # unique violation
-    assert not is_overlap(err(None))
+
+def test_only_exclusion_violations_are_overlaps() -> None:
+    assert is_overlap(_err("23P01"))
+    assert not is_overlap(_err("23503"))  # foreign key violation
+    assert not is_overlap(_err("23505"))  # unique violation
+    assert not is_overlap(_err(None))
+
+
+@pytest.mark.parametrize("state", ["23P01", "40P01", "40001"])
+def test_losing_a_race_covers_deadlock_and_serialization_aborts(state: str) -> None:
+    """Simultaneous inserts of one range can end in a deadlock abort, still a 409."""
+    assert is_lost_race(_err(state))
+
+
+@pytest.mark.parametrize("state", ["23503", "23505", "23502", "22003", None])
+def test_other_database_errors_are_not_a_lost_race(state: str | None) -> None:
+    assert not is_lost_race(_err(state))
 
 
 # --- repeat requests and the pending cap ---
@@ -442,52 +462,60 @@ async def test_repeating_an_identical_request_is_409(
     assert len(await bookings_in_db(db_session)) == 1
 
 
-async def test_client_is_capped_at_three_unexpired_pending_bookings(
+CAP_HOURS = ["09:00", "10:00", "11:00", "14:00", "15:00", "16:00"]
+
+
+async def test_client_is_capped_on_unexpired_pending_bookings(
     db_client: AsyncClient, db_session: AsyncSession
 ) -> None:
     _, stylist, service = await open_stylist(db_session)
     _, headers = await client_with_headers(db_session)
     _, other_headers = await client_with_headers(db_session)
     day = upcoming(0)
+    spare_hour = CAP_HOURS[MAX_PENDING_PER_CLIENT]
 
-    for hhmm in ("09:00", "10:00", "11:00"):
+    for hhmm in CAP_HOURS[:MAX_PENDING_PER_CLIENT]:
         ok = await db_client.post(
             URL, json=body(stylist, service.id, day, hhmm), headers=headers
         )
         assert ok.status_code == 201
-    assert MAX_PENDING_PER_CLIENT == 3
 
     capped = await db_client.post(
-        URL, json=body(stylist, service.id, day, "14:00"), headers=headers
+        URL, json=body(stylist, service.id, day, spare_hour), headers=headers
     )
     other_client = await db_client.post(
-        URL, json=body(stylist, service.id, day, "14:00"), headers=other_headers
+        URL, json=body(stylist, service.id, day, spare_hour), headers=other_headers
     )
 
     assert capped.status_code == 409
-    assert "3 unpaid pending bookings" in capped.json()["detail"]
+    assert capped.json()["detail"] == too_many_pending().detail
     assert other_client.status_code == 201  # the cap is per client
 
 
 async def test_cap_holds_under_concurrent_requests_from_one_client(
     db_client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """The client row lock makes the cap race-free: 5 at once, exactly 3 succeed."""
+    """The client row lock makes the cap race-free: every extra request is refused."""
     _, stylist, service = await open_stylist(db_session)
     _, headers = await client_with_headers(db_session)
     day = upcoming(0)
+    extra = 2
 
     responses = await asyncio.gather(
         *(
             db_client.post(
                 URL, json=body(stylist, service.id, day, hhmm), headers=headers
             )
-            for hhmm in ("09:00", "10:00", "11:00", "14:00", "15:00")
+            for hhmm in CAP_HOURS[: MAX_PENDING_PER_CLIENT + extra]
         )
     )
 
-    codes = sorted(r.status_code for r in responses)
-    assert codes == [201, 201, 201, 409, 409]
+    created = [r for r in responses if r.status_code == 201]
+    refused = [r for r in responses if r.status_code == 409]
+    assert len(created) == MAX_PENDING_PER_CLIENT
+    assert len(refused) == extra
+    # Refused because of the cap, not because the slots collided.
+    assert {r.json()["detail"] for r in refused} == {too_many_pending().detail}
     assert len(await bookings_in_db(db_session)) == MAX_PENDING_PER_CLIENT
 
 
