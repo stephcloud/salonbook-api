@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.availability_rule import AvailabilityRule, RuleKind
 from app.models.booking import ACTIVE_STATUSES, Booking
+from app.models.salon import Salon
 from app.models.service import Service
 from app.models.stylist_service import StylistService
 from app.models.user import User, UserRole
@@ -61,6 +62,40 @@ def compute_slots(
     return sorted(slots)
 
 
+def not_found() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+
+
+async def load_stylist_and_service(
+    session: AsyncSession, stylist_id: uuid.UUID, service_id: uuid.UUID
+) -> tuple[User, Service]:
+    """The stylist and a service they offer, both in the same existing salon.
+
+    One identical 404 for every failure, so a signed-in user can't tell stylist ids
+    from service ids or probe other salons.
+    """
+    stylist = await session.get(User, stylist_id)
+    if stylist is None or stylist.role != UserRole.STYLIST or stylist.salon_id is None:
+        raise not_found()
+    if await session.get(Salon, stylist.salon_id) is None:
+        raise not_found()
+    # Only services the stylist offers (so the duration is the one being booked).
+    service = (
+        await session.execute(
+            select(Service)
+            .join(StylistService, StylistService.service_id == Service.id)
+            .where(
+                StylistService.stylist_id == stylist_id,
+                Service.id == service_id,
+                Service.salon_id == stylist.salon_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if service is None:
+        raise not_found()
+    return stylist, service
+
+
 async def get_slots(
     session: AsyncSession,
     stylist_id: uuid.UUID,
@@ -73,22 +108,7 @@ async def get_slots(
     tz = tz or salon_timezone()
     now = now or datetime.now(UTC)
 
-    # One identical 404 for every lookup failure, so a signed-in user can't tell
-    # stylist ids from service ids.
-    not_found = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
-    stylist = await session.get(User, stylist_id)
-    if stylist is None or stylist.role != UserRole.STYLIST or stylist.salon_id is None:
-        raise not_found
-    # Only services the stylist offers (so the duration is the one being booked).
-    service = (
-        await session.execute(
-            select(Service)
-            .join(StylistService, StylistService.service_id == Service.id)
-            .where(StylistService.stylist_id == stylist_id, Service.id == service_id)
-        )
-    ).scalar_one_or_none()
-    if service is None:
-        raise not_found
+    _, service = await load_stylist_and_service(session, stylist_id, service_id)
 
     today = now.astimezone(tz).date()
     if day < today:
