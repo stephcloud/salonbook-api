@@ -403,6 +403,19 @@ async def _handle_refund_event(
 # --- sending refunds ---
 
 
+async def refunds_waiting_for_booking(
+    session: AsyncSession, booking_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Ids of this booking's payments whose refund is queued (e.g. just after a cancel)."""
+    result = await session.execute(
+        select(Payment.id).where(
+            Payment.booking_id == booking_id,
+            Payment.status == PaymentStatus.REFUND_PENDING,
+        )
+    )
+    return list(result.scalars())
+
+
 def _refund_due_clause(now: datetime) -> list[object]:
     """Rows a refund attempt may pick up: waiting, not exhausted, not mid-attempt."""
     return [
