@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import auth, bookings, salons, services, stylists
+from app.api.v1 import auth, bookings, payments, salons, services, stylists
 from app.core.config import settings
 from app.db.session import engine
 from app.jobs import expire_pending
@@ -36,6 +36,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(bookings.router, prefix="/api/v1")
+app.include_router(payments.router, prefix="/api/v1")
 app.include_router(salons.router, prefix="/api/v1")
 app.include_router(services.router, prefix="/api/v1")
 app.include_router(stylists.router, prefix="/api/v1")
