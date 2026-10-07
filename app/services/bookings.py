@@ -65,7 +65,7 @@ def is_lost_race(exc: DBAPIError) -> bool:
     return sqlstate(exc) in LOST_RACE_STATES
 
 
-def _expiry_cutoff(now: datetime) -> datetime:
+def expiry_cutoff(now: datetime) -> datetime:
     """Pending bookings created before this are lapsed (exactly 15:00 still holds)."""
     return now - timedelta(minutes=PENDING_EXPIRY_MINUTES)
 
@@ -87,7 +87,7 @@ async def expire_pending_bookings(
         select(Booking.id)
         .where(
             Booking.status == BookingStatus.PENDING,
-            Booking.created_at < _expiry_cutoff(now),
+            Booking.created_at < expiry_cutoff(now),
         )
         .order_by(Booking.id)
         # NO KEY UPDATE: only `status` changes, and a plain FOR UPDATE would block
@@ -211,7 +211,7 @@ async def _count_unexpired_pending(
         .where(
             Booking.client_id == client_id,
             Booking.status == BookingStatus.PENDING,
-            Booking.created_at >= _expiry_cutoff(now),
+            Booking.created_at >= expiry_cutoff(now),
         )
     )
     return result.scalar_one()
