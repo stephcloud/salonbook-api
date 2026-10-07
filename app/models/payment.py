@@ -35,13 +35,15 @@ class Payment(SQLModel, table=True):
             name="ck_payments_refund_amount_positive",
         ),
         CheckConstraint("refund_attempts >= 0", name="ck_payments_refund_attempts"),
-        # One live payment per booking: a double-click can't create two, while a failed
-        # initialize leaves room for a retry with a fresh row and reference.
+        # One live (pending or paid) payment per booking: a double-click can't create two,
+        # while a failed initialize leaves room for a retry with a fresh row. Rows waiting
+        # for a refund, or already refunded, are not live: a stale event on a failed row
+        # must be able to move to refund_pending while a newer payment is open.
         Index(
             "uq_payments_booking_id_live",
             "booking_id",
             unique=True,
-            postgresql_where=text("status <> 'failed'"),
+            postgresql_where=text("status IN ('pending', 'paid')"),
         ),
         # The refund sweeper only ever looks at rows waiting for a refund.
         Index(
