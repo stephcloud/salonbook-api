@@ -10,6 +10,7 @@ from app.services.paystack import (
     InitializedTransaction,
     PaystackClient,
     PaystackError,
+    RefundResult,
 )
 
 # A non-empty secret for every test. Only the empty-secret test overrides it.
@@ -34,6 +35,19 @@ def charge_success_body(reference: str, amount: int, currency: str = "NGN") -> b
     ).encode()
 
 
+def refund_event_body(event: str, reference: str, status: str = "processed") -> bytes:
+    return event_body(
+        event,
+        {
+            "status": status,
+            "transaction_reference": reference,
+            "refund_reference": "rf_ref",
+            "amount": 500000,
+            "currency": "NGN",
+        },
+    )
+
+
 def event_body(event: str, data: dict[str, Any]) -> bytes:
     return json.dumps({"event": event, "data": data}).encode()
 
@@ -43,7 +57,12 @@ def webhook_headers(raw_body: bytes) -> dict[str, str]:
 
 
 class FakePaystack(PaystackClient):
-    """Records calls instead of making them. Script a failure with `fail_initialize`."""
+    """Records calls instead of making them, and can be scripted to misbehave.
+
+    Initialize: set `fail_initialize`. Refunds: `refund_failures` makes the next N
+    create_refund calls fail cleanly; `lose_next_refund_reply` makes the next one
+    succeed at "Paystack" but raise to the caller (the answer got lost).
+    """
 
     def __init__(self) -> None:
         super().__init__("sk_test_fake")
@@ -51,6 +70,16 @@ class FakePaystack(PaystackClient):
         self.fail_initialize = False
         # Runs inside initialize_transaction, e.g. to inspect the database mid-call.
         self.on_initialize: Callable[[str], Awaitable[None]] | None = None
+
+        self.refund_calls: list[dict[str, Any]] = []
+        self.find_calls: list[str] = []
+        self.refund_failures = 0
+        self.lose_next_refund_reply = False
+        self.refund_status = "pending"
+        # Runs inside create_refund, e.g. to inspect row locks mid-call.
+        self.on_refund: Callable[[str], Awaitable[None]] | None = None
+        # What "Paystack" holds, keyed by transaction reference.
+        self.refunds: dict[str, RefundResult] = {}
 
     async def initialize_transaction(
         self, *, email: str, amount: int, currency: str, reference: str
@@ -72,3 +101,23 @@ class FakePaystack(PaystackClient):
             access_code=f"ac_{reference}",
             reference=reference,
         )
+
+    async def create_refund(self, *, reference: str, amount: int) -> RefundResult:
+        self.refund_calls.append({"reference": reference, "amount": amount})
+        if self.on_refund is not None:
+            await self.on_refund(reference)
+        if self.refund_failures > 0:
+            self.refund_failures -= 1
+            raise PaystackError("scripted refund failure")
+        result = RefundResult(
+            refund_id=f"rf_{len(self.refund_calls)}", status=self.refund_status
+        )
+        self.refunds[reference] = result
+        if self.lose_next_refund_reply:
+            self.lose_next_refund_reply = False
+            raise PaystackError("reply lost after Paystack accepted the refund")
+        return result
+
+    async def find_refund(self, *, reference: str) -> RefundResult | None:
+        self.find_calls.append(reference)
+        return self.refunds.get(reference)

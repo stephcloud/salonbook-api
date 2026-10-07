@@ -11,25 +11,26 @@ import hmac
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
 from app.models.booking import Booking, BookingStatus
 from app.models.payment import Payment, PaymentStatus
 from app.models.salon import Salon
 from app.models.user import User
-from app.schemas.payment import ChargeSuccessData
+from app.schemas.payment import ChargeSuccessData, RefundEventData
 from app.services.bookings import expiry_cutoff, sqlstate
 from app.services.paystack import (
     InitializedTransaction,
     PaystackClient,
     PaystackError,
+    RefundResult,
 )
 from app.services.slots import not_found
 
@@ -42,6 +43,14 @@ UNIQUE_VIOLATION = "23505"
 # `uq_payments_booking_id_live` partial index (model and migration 0009).
 LIVE_STATUSES = (PaymentStatus.PENDING, PaymentStatus.PAID)
 # A payment in one of these states has already been dealt with: a repeat webhook is a no-op.
+# A refund attempt that got no answer is not retried before this long has passed, so a
+# slow Paystack can't be hit twice at once, and so a sweeper can't trip over a live attempt.
+REFUND_RETRY_AFTER = timedelta(minutes=5)
+# After this many attempts a refund is left for a human: something is wrong that retrying
+# won't fix (e.g. the Paystack balance is empty).
+MAX_REFUND_ATTEMPTS = 8
+SessionFactory = async_sessionmaker[AsyncSession]
+REFUND_EVENTS = frozenset({"refund.processed", "refund.failed"})
 SETTLED_STATUSES = frozenset(
     {PaymentStatus.PAID, PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED}
 )
@@ -203,12 +212,14 @@ async def handle_paystack_event(
     raw_body: bytes,
     signature: str | None,
     now: datetime | None = None,
-) -> None:
-    """Apply a Paystack event. 401 if the signature is bad; otherwise returns normally.
+) -> list[uuid.UUID]:
+    """Apply a Paystack event; return the payments now waiting for a refund to be sent.
 
-    The signature is checked on the raw bytes before anything else, so a forged request
-    reaches neither the parser nor the database. Events we don't act on are acknowledged
-    (returning normally makes the router answer 200) so Paystack stops retrying them.
+    401 if the signature is bad; otherwise returns normally. The signature is checked on
+    the raw bytes before anything else, so a forged request reaches neither the parser
+    nor the database. Events we don't act on are acknowledged (returning normally makes
+    the router answer 200) so Paystack stops retrying them. The caller starts the
+    refunds after this has committed: nothing here calls Paystack.
     """
     if not verify_signature(raw_body, signature, settings.PAYSTACK_SECRET_KEY):
         logger.warning("paystack webhook rejected: bad signature")
@@ -222,8 +233,13 @@ async def handle_paystack_event(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="invalid body"
         ) from None
-    if not isinstance(event, dict) or event.get("event") != "charge.success":
-        return
+    kind = event.get("event") if isinstance(event, dict) else None
+    if not isinstance(kind, str):
+        return []
+    if kind in REFUND_EVENTS:
+        return await _handle_refund_event(session, kind, event.get("data"), now)
+    if kind != "charge.success":
+        return []
     try:
         data = ChargeSuccessData.model_validate(event.get("data"))
     except ValidationError:
@@ -235,17 +251,19 @@ async def handle_paystack_event(
             "(reference=%r)",
             reference if isinstance(reference, str) else None,
         )
-        return
+        return []
     try:
-        await _apply_charge_success(session, data, now)
+        payment_id = await _apply_charge_success(session, data, now)
     except Exception:
         await session.rollback()  # release the row locks at once
         raise
+    return [payment_id] if payment_id is not None else []
 
 
 async def _apply_charge_success(
     session: AsyncSession, data: ChargeSuccessData, now: datetime
-) -> None:
+) -> uuid.UUID | None:
+    """Apply a charge.success. Returns the payment id if it now needs a refund sent."""
     ids = (
         await session.execute(
             select(Payment.id, Payment.booking_id).where(
@@ -256,7 +274,7 @@ async def _apply_charge_success(
     if ids is None:
         logger.warning("charge.success for unknown reference %s", data.reference)
         await session.rollback()
-        return
+        return None
     payment_id, booking_id = ids
 
     # Lock booking, then payment. populate_existing: act on the current status, never a
@@ -280,7 +298,7 @@ async def _apply_charge_success(
 
     if payment.status in SETTLED_STATUSES:
         await session.rollback()  # replay: nothing to write, just release the locks
-        return
+        return None
 
     if data.amount != payment.amount or data.currency.upper() != payment.currency:
         # Money arrived but not what we asked for. Never confirm on it: give it back.
@@ -302,7 +320,9 @@ async def _apply_charge_success(
         booking.updated_at = now
     else:
         _settle_late_payment(booking, payment, now)
+    needs_refund = payment.status == PaymentStatus.REFUND_PENDING
     await session.commit()
+    return payment.id if needs_refund else None
 
 
 def _settle_late_payment(booking: Booking, payment: Payment, now: datetime) -> None:
@@ -327,3 +347,178 @@ def _settle_late_payment(booking: Booking, payment: Payment, now: datetime) -> N
     elif booking.status == BookingStatus.CANCELLED:
         booking.refund_due = True
         booking.updated_at = now
+
+
+# --- refund events from Paystack ---
+
+
+async def _handle_refund_event(
+    session: AsyncSession, kind: str, raw_data: object, now: datetime
+) -> list[uuid.UUID]:
+    """refund.processed settles a queued refund; refund.failed reopens a finished one."""
+    try:
+        data = RefundEventData.model_validate(raw_data)
+    except ValidationError:
+        logger.error("signed %s could not be parsed; needs manual review", kind)
+        return []
+    try:
+        # Only the payment row is touched, so no booking lock (lock order stays valid).
+        payment = (
+            await session.execute(
+                select(Payment)
+                .where(Payment.paystack_reference == data.transaction_reference)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if payment is None:
+            logger.warning(
+                "%s for unknown reference %s", kind, data.transaction_reference
+            )
+            await session.rollback()
+            return []
+        if (
+            kind == "refund.processed"
+            and payment.status == PaymentStatus.REFUND_PENDING
+        ):
+            payment.status = PaymentStatus.REFUNDED
+            payment.refunded_at = now
+        elif kind == "refund.failed" and payment.status == PaymentStatus.REFUNDED:
+            # Paystack could not deliver it: we still owe it. Reopen so it is retried
+            # (bounded by MAX_REFUND_ATTEMPTS), instead of showing a refund that never was.
+            logger.error("refund failed at Paystack for payment %s", payment.id)
+            payment.status = PaymentStatus.REFUND_PENDING
+            payment.refunded_at = None
+            payment.refund_attempted_at = None
+        else:
+            await session.rollback()  # replay or nothing to change
+            return []
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    return []
+
+
+# --- sending refunds ---
+
+
+def _refund_due_clause(now: datetime) -> list[object]:
+    """Rows a refund attempt may pick up: waiting, not exhausted, not mid-attempt."""
+    return [
+        Payment.status == PaymentStatus.REFUND_PENDING,
+        Payment.refund_attempts < MAX_REFUND_ATTEMPTS,
+        or_(
+            Payment.refund_attempted_at.is_(None),
+            Payment.refund_attempted_at < now - REFUND_RETRY_AFTER,
+        ),
+    ]
+
+
+async def list_refunds_due(
+    session_factory: SessionFactory, now: datetime | None = None, limit: int = 20
+) -> list[uuid.UUID]:
+    """Ids of payments whose refund should be (re)tried now, oldest first."""
+    now = now or datetime.now(UTC)
+    async with session_factory() as session:
+        result = await session.execute(
+            select(Payment.id)
+            .where(*_refund_due_clause(now))
+            .order_by(Payment.created_at)
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+
+async def process_refund(
+    session_factory: SessionFactory,
+    paystack: PaystackClient,
+    payment_id: uuid.UUID,
+    now: datetime | None = None,
+) -> bool:
+    """Send the refund for one `refund_pending` payment. True if it is now refunded.
+
+    Three short steps, and no lock is ever held while Paystack is called:
+      1. claim: lock the row (skipping it if another worker has it), stamp
+         `refund_attempted_at`, commit. The stamp is what keeps two workers, or a
+         worker and the sweeper, from refunding the same payment at once.
+      2. ask Paystack. On a retry, first ask whether an earlier attempt already got
+         through (its answer may have been lost) and never create a second refund.
+      3. finalize: lock again, and only if it is still `refund_pending` mark it refunded.
+    Safe to call repeatedly and concurrently. Any Paystack failure leaves the payment
+    `refund_pending`, to be retried after REFUND_RETRY_AFTER.
+    """
+    now = now or datetime.now(UTC)
+    claim = await _claim_refund(session_factory, payment_id, now)
+    if claim is None:
+        return False
+    reference, amount, attempt = claim
+    try:
+        result = None
+        if attempt > 1:
+            result = await paystack.find_refund(reference=reference)
+        if result is None:
+            result = await paystack.create_refund(reference=reference, amount=amount)
+    except PaystackError as exc:
+        logger.warning(
+            "refund for payment %s not sent (attempt %d): %s", payment_id, attempt, exc
+        )
+        if attempt >= MAX_REFUND_ATTEMPTS:
+            logger.error(
+                "refund for payment %s gave up; needs manual review", payment_id
+            )
+        return False
+    return await _finalize_refund(session_factory, payment_id, result, now)
+
+
+async def _claim_refund(
+    session_factory: SessionFactory, payment_id: uuid.UUID, now: datetime
+) -> tuple[str, int, int] | None:
+    """(reference, amount to refund, attempt number), or None if nothing is due."""
+    async with session_factory() as session:
+        payment = (
+            await session.execute(
+                select(Payment)
+                .where(Payment.id == payment_id, *_refund_due_clause(now))
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if payment is None:
+            return None
+        payment.refund_attempted_at = now
+        payment.refund_attempts += 1
+        claim = (
+            payment.paystack_reference,
+            payment.refund_amount
+            if payment.refund_amount is not None
+            else payment.amount,
+            payment.refund_attempts,
+        )
+        await session.commit()
+        return claim
+
+
+async def _finalize_refund(
+    session_factory: SessionFactory,
+    payment_id: uuid.UUID,
+    result: RefundResult,
+    now: datetime,
+) -> bool:
+    async with session_factory() as session:
+        payment = (
+            await session.execute(
+                select(Payment)
+                .where(Payment.id == payment_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        if payment.status == PaymentStatus.REFUND_PENDING:
+            payment.status = PaymentStatus.REFUNDED
+            payment.refunded_at = now
+            payment.paystack_refund_id = result.refund_id
+            await session.commit()
+        else:
+            await session.rollback()  # refund.processed beat us to it: nothing to write
+        return True

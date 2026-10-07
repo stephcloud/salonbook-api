@@ -5,16 +5,19 @@ from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.security import decode_access_token
-from app.db.session import get_session
+from app.db.session import get_session, get_session_maker
 from app.models.user import User, UserRole
 from app.services.auth import invalid_credentials
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+SessionMakerDep = Annotated[
+    async_sessionmaker[AsyncSession], Depends(get_session_maker)
+]
 
 
 async def get_current_user(
