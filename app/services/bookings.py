@@ -7,6 +7,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import ACTIVE_STATUSES, Booking, BookingStatus
+from app.models.payment import Payment, PaymentStatus
 from app.models.salon import Salon
 from app.models.user import User
 from app.schemas.booking import BookingCreate
@@ -139,7 +140,9 @@ async def cancel_booking(
     write), so cancelling twice is safe. Completed and no-show bookings, and bookings
     whose start time has passed, are 409. A salon owner's cancel of a confirmed booking
     is always refund_due; a client's follows the salon's cancellation window.
-    `refund_due` is only recorded here; the Paystack refund belongs to the payments step.
+    When a refund is due, the booking's paid deposit moves to `refund_pending` in this
+    same transaction, so the decision is applied exactly once. Sending the money to
+    Paystack happens after the commit (`payments.process_refund`), never here.
     """
     now = now or datetime.now(UTC)
     try:
@@ -156,7 +159,9 @@ async def _cancel_booking(
         await session.execute(
             select(Booking)
             .where(Booking.id == booking_id)
-            .with_for_update()
+            # NO KEY UPDATE: only `status` and friends change, and a plain FOR UPDATE
+            # would block the FOR KEY SHARE a payment insert takes on this row.
+            .with_for_update(key_share=True)
             .execution_options(populate_existing=True)  # never act on a stale status
         )
     ).scalar_one_or_none()
@@ -198,8 +203,33 @@ async def _cancel_booking(
     booking.cancelled_at = now
     booking.refund_due = refund_due
     booking.updated_at = now
+    if refund_due:
+        await _queue_deposit_refund(session, booking.id)
     await session.commit()
     return booking
+
+
+async def _queue_deposit_refund(session: AsyncSession, booking_id: uuid.UUID) -> None:
+    """Mark the booking's paid deposit as owed back. The caller holds the booking lock.
+
+    Lock order: booking row first (taken by the caller), then the payment row here, as
+    in the webhook. Does nothing if there is no paid payment, so cancelling twice, or a
+    booking that never had a payment, writes nothing. At most one payment per booking
+    is ever `paid` (unique index), so there is at most one row to move.
+    """
+    payment = (
+        await session.execute(
+            select(Payment)
+            .where(
+                Payment.booking_id == booking_id, Payment.status == PaymentStatus.PAID
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if payment is not None:
+        payment.status = PaymentStatus.REFUND_PENDING
+        payment.refund_amount = payment.amount
 
 
 async def _count_unexpired_pending(
@@ -280,9 +310,10 @@ async def _create_booking(
     local_start = starts_at.astimezone(tz)
 
     # Serialize this client's concurrent requests so the pending cap can't be raced.
-    # Lock order everywhere: the client row first, then booking rows in id order.
-    # Any future path (cancel, reschedule, webhook) must follow it to stay
-    # deadlock-free.
+    # Lock order everywhere: the client row first, then booking rows in id order, then
+    # a payment row. Cancel, the payment webhook and refunds all follow it (booking
+    # FOR NO KEY UPDATE, then payment FOR UPDATE); any new path must too, and never
+    # lock a booking while holding a payment, or it can deadlock with the webhook.
     await session.execute(
         select(User.id).where(User.id == client.id).with_for_update(key_share=True)
     )

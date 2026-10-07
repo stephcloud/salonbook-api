@@ -1,9 +1,9 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 
-from app.api.deps import SessionDep, require_role
+from app.api.deps import SessionDep, SessionMakerDep, require_role
 from app.models.user import User, UserRole
 from app.schemas.booking import BookingCreate, BookingResponse
 from app.schemas.payment import PaymentResponse
@@ -38,7 +38,21 @@ async def pay_booking(
 
 @router.post("/{booking_id}/cancel", response_model=BookingResponse)
 async def cancel_booking(
-    booking_id: uuid.UUID, session: SessionDep, user: ClientOrOwner
+    booking_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    session_maker: SessionMakerDep,
+    paystack: Annotated[PaystackClient, Depends(get_paystack_client)],
+    user: ClientOrOwner,
 ) -> BookingResponse:
     booking = await booking_service.cancel_booking(session, booking_id, user)
-    return BookingResponse.model_validate(booking)
+    response = BookingResponse.model_validate(booking)
+    # The cancel has committed (and authorised the caller). Send any queued refund now,
+    # outside every lock; if Paystack is down the retry job picks it up.
+    for payment_id in await payment_service.refunds_waiting_for_booking(
+        session, booking.id
+    ):
+        background_tasks.add_task(
+            payment_service.process_refund, session_maker, paystack, payment_id
+        )
+    return response

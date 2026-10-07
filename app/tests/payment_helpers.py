@@ -41,6 +41,7 @@ async def make_scenario(
     *,
     age: timedelta = timedelta(0),
     now: datetime | None = None,
+    starts_in: timedelta = timedelta(days=7),
     booking_status: BookingStatus = BookingStatus.PENDING,
     payment_status: PaymentStatus | None = PaymentStatus.PENDING,
     authorization_url: str | None = "https://checkout.paystack.test/x",
@@ -49,7 +50,7 @@ async def make_scenario(
     now = now or datetime.now(UTC)
     salon, stylist, service = await setup_stylist(db_session, 60)
     client, headers = await make_user(db_session, UserRole.CLIENT)
-    starts_at = now + timedelta(days=7)
+    starts_at = now + starts_in
     booking = Booking(
         client_id=client.id,
         stylist_id=stylist.id,
