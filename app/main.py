@@ -8,19 +8,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import auth, bookings, payments, salons, services, stylists
 from app.core.config import settings
 from app.db.session import engine
-from app.jobs import expire_pending
+from app.jobs import expire_pending, retry_refunds
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-    # Housekeeping loop; POST /bookings stays correct even if this isn't running.
-    task = asyncio.create_task(expire_pending.run_forever())
+    # Housekeeping loops. POST /bookings stays correct without the first; a refund is
+    # still attempted right after the webhook or cancel without the second, which only
+    # retries what that missed.
+    tasks = [
+        asyncio.create_task(expire_pending.run_forever()),
+        asyncio.create_task(retry_refunds.run_forever()),
+    ]
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
         await engine.dispose()
 
 
