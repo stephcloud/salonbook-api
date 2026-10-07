@@ -4,6 +4,7 @@ from sqlmodel import SQLModel
 from app.models import (  # noqa: F401
     availability_rule,
     booking,
+    payment,
     salon,
     service,
     stylist_service,
