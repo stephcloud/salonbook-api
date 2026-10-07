@@ -45,14 +45,13 @@ async def cancel_booking(
     paystack: Annotated[PaystackClient, Depends(get_paystack_client)],
     user: ClientOrOwner,
 ) -> BookingResponse:
-    booking = await booking_service.cancel_booking(session, booking_id, user)
-    response = BookingResponse.model_validate(booking)
-    # The cancel has committed (and authorised the caller). Send any queued refund now,
-    # outside every lock; if Paystack is down the retry job picks it up.
-    for payment_id in await payment_service.refunds_waiting_for_booking(
-        session, booking.id
-    ):
+    booking, refund_ids = await payment_service.cancel_booking_and_list_refunds(
+        session, booking_id, user
+    )
+    # The cancel has committed. Send any queued refund now, outside every lock; if
+    # Paystack is down the retry job picks it up.
+    for payment_id in refund_ids:
         background_tasks.add_task(
-            payment_service.process_refund, session_maker, paystack, payment_id
+            payment_service.try_refund, session_maker, paystack, payment_id
         )
-    return response
+    return BookingResponse.model_validate(booking)

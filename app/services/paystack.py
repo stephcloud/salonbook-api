@@ -47,18 +47,29 @@ def _says_fully_reversed(response: httpx.Response) -> bool:
     return isinstance(message, str) and FULLY_REVERSED_MESSAGE in message.lower()
 
 
-def _refund_record(item: object, reference: str) -> RefundResult | None:
-    """The refund in `item` for transaction `reference`, or None if failed or not ours."""
+def _refund_record(
+    item: object, reference: str, *, must_match: bool
+) -> RefundResult | None:
+    """The refund in `item` for transaction `reference`, or None if failed or not ours.
+
+    Any status except `failed` is returned as it is (including ones we don't know, such
+    as a refund needing attention): the caller decides what counts as done, and a refund
+    that exists must never be created a second time. With `must_match` the record has to
+    name this transaction; a lookup that cannot prove it is ours must not count.
+    """
     if not isinstance(item, dict):
         return None
     status = str(item.get("status", "")).lower()
-    if status not in ACCEPTED_REFUND_STATUSES:
+    if status == "failed":
         return None
     transaction = item.get("transaction")
     seen = (
         transaction.get("reference") if isinstance(transaction, dict) else transaction
     )
-    if isinstance(seen, str) and seen != reference:
+    if isinstance(seen, str):
+        if seen != reference:
+            return None
+    elif must_match:
         return None
     refund_id = item.get("id")
     return RefundResult(
@@ -139,9 +150,11 @@ class PaystackClient:
             raise PaystackError(f"refund rejected: HTTP {response.status_code}")
         try:
             body = response.json()
-            result = _refund_record(body["data"], reference)
-        except (ValueError, KeyError, TypeError, AttributeError):
-            raise PaystackError("refund reply was malformed") from None
+            result = _refund_record(body["data"], reference, must_match=False)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise PaystackError(
+                f"refund reply was malformed: {type(exc).__name__}"
+            ) from None
         if body.get("status") is not True or result is None:
             raise PaystackError("refund was not accepted")
         return result
@@ -149,19 +162,27 @@ class PaystackClient:
     async def find_refund(self, *, reference: str) -> RefundResult | None:
         """An accepted refund already on file for this transaction, if any.
 
-        Used before a retry: if an earlier attempt reached Paystack but its answer was
-        lost, this finds it, so we never create a second refund.
+        Called before every create: if an earlier attempt reached Paystack but its
+        answer was lost, this finds it, so we never create a second refund. Paystack could
+        list a refund a moment late; if so a create can still go through, and Paystack's
+        own "fully reversed" / amount checks are the last guard.
         """
         try:
             async with self._http() as http:
                 response = await http.get("/refund", params={"reference": reference})
             response.raise_for_status()
             for item in response.json()["data"]:
-                result = _refund_record(item, reference)
+                result = _refund_record(item, reference, must_match=True)
                 if result is not None:
                     return result
-        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
-            raise PaystackError("refund lookup failed") from None
+        except (
+            httpx.HTTPError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+        ) as exc:
+            raise PaystackError(f"refund lookup failed: {type(exc).__name__}") from None
         return None
 
 

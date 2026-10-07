@@ -14,7 +14,13 @@ from app.services.payments import (
     REFUND_RETRY_AFTER,
     process_refund,
 )
-from app.tests.payment_helpers import Scenario, make_scenario, reload, row_dict
+from app.tests.payment_helpers import (
+    Scenario,
+    make_scenario,
+    reload,
+    row_dict,
+    until,
+)
 from app.tests.paystack_fakes import (
     FakePaystack,
     charge_success_body,
@@ -66,7 +72,7 @@ async def test_a_waiting_refund_is_sent_and_the_payment_marked_refunded(
     assert fake_paystack.refund_calls == [
         {"reference": scenario.reference, "amount": scenario.amount}
     ]
-    assert fake_paystack.find_calls == []  # a first attempt has nothing to look up
+    assert fake_paystack.find_calls == [scenario.reference]  # looks before it creates
     _, payment = await reload(db_session, scenario)
     assert payment.status == PaymentStatus.REFUNDED
     assert payment.refunded_at == T0
@@ -153,7 +159,7 @@ async def test_a_failed_attempt_stays_refund_pending_and_is_retried_after_the_wi
     _, payment = await reload(db_session, scenario)
     assert payment.status == PaymentStatus.REFUNDED
     assert payment.refund_attempts == 2
-    assert fake_paystack.find_calls == [scenario.reference]  # asked before retrying
+    assert fake_paystack.find_calls == [scenario.reference] * 2  # every attempt looks
 
 
 async def test_a_lost_reply_is_found_on_retry_and_never_refunded_twice(
@@ -205,14 +211,25 @@ async def test_two_workers_refunding_at_once_send_one_refund(
 ) -> None:
     scenario = await owed(db_session)
 
-    async def slow(_: str) -> None:
-        await asyncio.sleep(0.3)  # keep the first call in flight
+    release = asyncio.Event()
 
-    fake_paystack.on_refund = slow
+    async def hold(_: str) -> None:
+        await release.wait()  # the first call stays in flight until we say so
 
-    results = await asyncio.gather(
-        *(run(session_maker, fake_paystack, scenario) for _ in range(4))
+    fake_paystack.on_refund = hold
+
+    workers = [
+        asyncio.create_task(run(session_maker, fake_paystack, scenario))
+        for _ in range(4)
+    ]
+    # One is inside Paystack; the other three have already found nothing to do.
+    await until(
+        lambda: (
+            len(fake_paystack.refund_calls) == 1 and sum(w.done() for w in workers) == 3
+        )
     )
+    release.set()
+    results = await asyncio.gather(*workers)
 
     assert sorted(results) == [False, False, False, True]
     assert len(fake_paystack.refund_calls) == 1
@@ -285,17 +302,23 @@ async def test_refund_failed_event_reopens_a_payment_marked_refunded(
     assert payment.refund_attempted_at is None  # due for a retry at once
 
 
-async def test_refund_failed_event_on_a_waiting_refund_changes_nothing(
+async def test_refund_failed_event_makes_a_waiting_refund_due_at_once_without_a_new_budget(
     db_client: AsyncClient, db_session: AsyncSession
 ) -> None:
     scenario = await owed(db_session)
-    before = row_dict((await reload(db_session, scenario))[1])
+    assert scenario.payment is not None
+    scenario.payment.refund_attempted_at = T0
+    scenario.payment.refund_attempts = 7
+    await db_session.commit()
 
     await deliver_event(
         db_client, refund_event_body("refund.failed", scenario.reference)
     )
 
-    assert row_dict((await reload(db_session, scenario))[1]) == before
+    _, payment = await reload(db_session, scenario)
+    assert payment.status == PaymentStatus.REFUND_PENDING
+    assert payment.refund_attempted_at is None  # due now
+    assert payment.refund_attempts == 7  # a refund that keeps failing still runs out
 
 
 @pytest.mark.parametrize(
