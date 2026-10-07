@@ -14,7 +14,8 @@ Phone = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=3, max_length=30)
 ]
 CancellationHours = Annotated[int, Field(ge=0, le=24 * 30)]
-DepositAmount = Annotated[int, Field(ge=0, le=100_000_000)]
+# Kobo. Must be positive: a deposit is what confirms a booking, and Paystack can't charge 0.
+DepositAmount = Annotated[int, Field(gt=0, le=100_000_000)]
 
 
 class SalonCreate(BaseModel):

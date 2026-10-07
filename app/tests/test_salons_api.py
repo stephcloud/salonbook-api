@@ -1,5 +1,6 @@
 import uuid
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,12 +81,13 @@ async def test_create_salon_requires_auth(db_client: AsyncClient) -> None:
     assert (await db_client.post(SALONS, json=SALON)).status_code == 401
 
 
-async def test_create_salon_rejects_negative_deposit(
-    db_client: AsyncClient, db_session: AsyncSession
+@pytest.mark.parametrize("deposit", [-1, 0])
+async def test_create_salon_rejects_zero_or_negative_deposit(
+    db_client: AsyncClient, db_session: AsyncSession, deposit: int
 ) -> None:
     _, headers = await make_user(db_session)
     resp = await db_client.post(
-        SALONS, json={**SALON, "deposit_amount": -1}, headers=headers
+        SALONS, json={**SALON, "deposit_amount": deposit}, headers=headers
     )
     assert resp.status_code == 422
 
@@ -162,6 +164,20 @@ async def test_owner_updates_own_salon(
     assert resp.status_code == 200
     assert resp.json()["cancellation_hours"] == 48
     assert resp.json()["name"] == SALON["name"]
+
+
+@pytest.mark.parametrize("deposit", [-1, 0])
+async def test_update_salon_rejects_zero_or_negative_deposit(
+    db_client: AsyncClient, db_session: AsyncSession, deposit: int
+) -> None:
+    owner, headers = await make_user(db_session)
+    salon = await make_salon(db_session, owner)
+    resp = await db_client.patch(
+        f"{SALONS}/{salon.id}", json={"deposit_amount": deposit}, headers=headers
+    )
+    assert resp.status_code == 422
+    await db_session.refresh(salon)
+    assert salon.deposit_amount == SALON["deposit_amount"]
 
 
 async def test_owner_a_cannot_edit_owner_b_salon(
