@@ -55,14 +55,26 @@ class Settings(BaseSettings):
                 return "postgresql+asyncpg://" + value[len(prefix) :]
         return value
 
+    def _is_production(self) -> bool:
+        # Fail closed: anything other than an explicit local/test is production.
+        return self.ENVIRONMENT.lower() not in {"local", "test"}
+
     @model_validator(mode="after")
     def reject_weak_secret_in_production(self) -> "Settings":
-        if self.ENVIRONMENT.lower() not in {"local", "test"} and (
+        if self._is_production() and (
             self.SECRET_KEY == "change-me" or len(self.SECRET_KEY) < 32
         ):
             raise ValueError(
                 "SECRET_KEY must be a random value of at least 32 characters in production"
             )
+        return self
+
+    @model_validator(mode="after")
+    def require_paystack_key_in_production(self) -> "Settings":
+        # Without it every webhook is rejected and every deposit fails: better to
+        # refuse to boot than to find out at the first payment.
+        if self._is_production() and not self.PAYSTACK_SECRET_KEY.strip():
+            raise ValueError("PAYSTACK_SECRET_KEY must be set in production")
         return self
 
 

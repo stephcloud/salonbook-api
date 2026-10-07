@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.jobs import expire_pending
+from app.jobs import expire_pending, retry_refunds
 from app.main import app
 from app.models.booking import Booking, BookingStatus
 from app.models.service import Service
@@ -357,6 +357,8 @@ async def test_app_lifespan_starts_and_stops_the_expiry_loop(
             raise
 
     monkeypatch.setattr(expire_pending, "run_forever", fake_loop)
+    # The refund loop would otherwise run for real against the dev database.
+    monkeypatch.setattr(retry_refunds, "run_forever", fake_loop)
 
     async with app.router.lifespan_context(app):
         await asyncio.wait_for(started.wait(), timeout=2)

@@ -51,16 +51,45 @@ def test_token_with_non_uuid_subject_is_rejected() -> None:
     assert decode_access_token(token) is None
 
 
+PROD = {
+    "_env_file": None,
+    "ENVIRONMENT": "production",
+    "SECRET_KEY": "x" * 40,
+    "PAYSTACK_SECRET_KEY": "sk_test_not_a_real_key",
+}
+
+
 @pytest.mark.parametrize("secret", ["change-me", "too-short"])
 def test_production_rejects_weak_secret_key(secret: str) -> None:
-    with pytest.raises(ValueError):
-        Settings(_env_file=None, ENVIRONMENT="production", SECRET_KEY=secret)
+    with pytest.raises(ValueError, match="SECRET_KEY"):
+        Settings(**{**PROD, "SECRET_KEY": secret})
 
 
 def test_production_accepts_strong_secret_key() -> None:
-    assert (
-        Settings(
-            _env_file=None, ENVIRONMENT="production", SECRET_KEY="x" * 40
-        ).ENVIRONMENT
-        == "production"
-    )
+    assert Settings(**PROD).ENVIRONMENT == "production"
+
+
+@pytest.mark.parametrize("key", ["", "   "])
+def test_production_rejects_a_missing_paystack_key(key: str) -> None:
+    with pytest.raises(ValueError, match="PAYSTACK_SECRET_KEY"):
+        Settings(**{**PROD, "PAYSTACK_SECRET_KEY": key})
+
+
+def test_production_rejects_an_unset_paystack_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(
+        "PAYSTACK_SECRET_KEY", raising=False
+    )  # not from the shell either
+    unset = {k: v for k, v in PROD.items() if k != "PAYSTACK_SECRET_KEY"}
+    with pytest.raises(ValueError, match="PAYSTACK_SECRET_KEY"):
+        Settings(**unset)
+
+
+@pytest.mark.parametrize("environment", ["local", "test"])
+def test_local_and_test_boot_without_a_paystack_key(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    monkeypatch.delenv("PAYSTACK_SECRET_KEY", raising=False)
+    unset = {k: v for k, v in PROD.items() if k != "PAYSTACK_SECRET_KEY"}
+    assert Settings(**{**unset, "ENVIRONMENT": environment}).PAYSTACK_SECRET_KEY == ""
