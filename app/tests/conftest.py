@@ -18,7 +18,7 @@ os.environ.setdefault("ENVIRONMENT", "test")  # before app settings load
 
 from app.core.config import settings
 from app.db.base import metadata
-from app.db.session import get_session
+from app.db.session import get_session, get_session_maker
 from app.main import app
 from app.services.paystack import get_paystack_client
 from app.tests.paystack_fakes import TEST_PAYSTACK_SECRET, FakePaystack
@@ -39,9 +39,12 @@ def _paystack_test_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "PAYSTACK_SECRET_KEY", TEST_PAYSTACK_SECRET)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def fake_paystack() -> Iterator[FakePaystack]:
-    """Replaces the Paystack HTTP client: no network, and calls are recorded."""
+    """Replaces the Paystack HTTP client: no network, and calls are recorded.
+
+    Autouse, so no test can reach the real Paystack by accident.
+    """
     fake = FakePaystack()
     app.dependency_overrides[get_paystack_client] = lambda: fake
     try:
@@ -111,6 +114,7 @@ async def db_client(db_engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_session_maker] = lambda: maker  # background refunds
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -118,3 +122,4 @@ async def db_client(db_engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
             yield ac
     finally:
         app.dependency_overrides.pop(get_session, None)
+        app.dependency_overrides.pop(get_session_maker, None)

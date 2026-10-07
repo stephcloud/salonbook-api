@@ -11,6 +11,11 @@ async_session_maker = async_sessionmaker(
 )
 
 
+def get_session_maker() -> async_sessionmaker[AsyncSession]:
+    """For work that outlives the request (background refunds), which needs its own sessions."""
+    return async_session_maker
+
+
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with async_session_maker() as session:
         yield session

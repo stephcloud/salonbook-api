@@ -21,6 +21,14 @@ class PaymentResponse(BaseModel):
     created_at: datetime
 
 
+class RefundEventData(BaseModel):
+    """The part of a Paystack refund.* event we read: which transaction it is about."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    transaction_reference: str = Field(min_length=1, max_length=100)
+
+
 class ChargeSuccessData(BaseModel):
     """The parts of a Paystack charge.success event we read. Anything else is ignored."""
 
