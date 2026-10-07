@@ -6,9 +6,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import ACTIVE_STATUSES, Booking, BookingStatus
+from app.models.salon import Salon
 from app.models.user import User
 from app.schemas.booking import BookingCreate
+from app.services.refund_policy import is_refundable
 from app.services.slots import (
     MAX_ADVANCE_DAYS,
     get_slots,
@@ -103,6 +105,101 @@ async def expire_pending_bookings(
         .values(status=BookingStatus.CANCELLED, updated_at=now)
     )
     return len(ids)
+
+
+def _forbidden() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+
+def _not_cancellable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This booking can no longer be cancelled.",
+    )
+
+
+def _already_started() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This booking has already started and can no longer be cancelled.",
+    )
+
+
+async def cancel_booking(
+    session: AsyncSession,
+    booking_id: uuid.UUID,
+    user: User,
+    now: datetime | None = None,
+) -> Booking:
+    """Cancel a pending or confirmed booking and record the refund decision.
+
+    Only the booking's client or the owner of its salon may cancel. The row is locked
+    and its status checked in one transaction, so concurrent cancels queue up and the
+    later ones find it already cancelled: that returns the booking unchanged (no
+    write), so cancelling twice is safe. Completed and no-show bookings, and bookings
+    whose start time has passed, are 409. A salon owner's cancel of a confirmed booking
+    is always refund_due; a client's follows the salon's cancellation window.
+    `refund_due` is only recorded here; the Paystack refund belongs to the payments step.
+    """
+    now = now or datetime.now(UTC)
+    try:
+        return await _cancel_booking(session, booking_id, user, now)
+    except Exception:
+        await session.rollback()  # release the row lock at once
+        raise
+
+
+async def _cancel_booking(
+    session: AsyncSession, booking_id: uuid.UUID, user: User, now: datetime
+) -> Booking:
+    booking = (
+        await session.execute(
+            select(Booking)
+            .where(Booking.id == booking_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)  # never act on a stale status
+        )
+    ).scalar_one_or_none()
+    if booking is None:
+        raise not_found()
+
+    stylist = await session.get(User, booking.stylist_id)
+    salon = (
+        await session.get(Salon, stylist.salon_id)
+        if stylist is not None and stylist.salon_id is not None
+        else None
+    )
+    is_client = booking.client_id == user.id
+    is_salon_owner = salon is not None and salon.owner_id == user.id
+    if not (is_client or is_salon_owner):
+        raise _forbidden()
+
+    if booking.status == BookingStatus.CANCELLED:
+        # Nothing to write. Commit just ends the transaction (releasing the row lock);
+        # rollback would expire the instance and break serialising it.
+        await session.commit()
+        return booking
+    if booking.status not in ACTIVE_STATUSES:
+        raise _not_cancellable()
+    if booking.starts_at <= now:
+        raise _already_started()
+
+    # A pending booking has paid no deposit, so there is nothing to refund. When the
+    # salon owner cancels, the client always gets the deposit back: the late-cancel
+    # window only applies to a client who backs out.
+    refund_due = booking.status == BookingStatus.CONFIRMED and (
+        is_salon_owner
+        or (
+            salon is not None
+            and is_refundable(booking.starts_at, now, salon.cancellation_hours)
+        )
+    )
+    booking.status = BookingStatus.CANCELLED
+    booking.cancelled_at = now
+    booking.refund_due = refund_due
+    booking.updated_at = now
+    await session.commit()
+    return booking
 
 
 async def _count_unexpired_pending(

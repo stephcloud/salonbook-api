@@ -2,7 +2,16 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Enum, ForeignKey, Index, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ExcludeConstraint
 from sqlmodel import Field, SQLModel
 
@@ -63,6 +72,15 @@ class Booking(SQLModel, table=True):
             ),
             nullable=False,
         ),
+    )
+    # Refund decision recorded at cancellation. NULL = no decision yet (not cancelled, or
+    # cancelled by the pending-expiry job). The real Paystack refund happens in the
+    # payments step.
+    refund_due: bool | None = Field(
+        default=None, sa_column=Column(Boolean, nullable=True)
+    )
+    cancelled_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

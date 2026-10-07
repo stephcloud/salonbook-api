@@ -115,8 +115,12 @@ async def test_client_creates_a_pending_booking(
         "starts_at",
         "ends_at",
         "status",
+        "refund_due",
+        "cancelled_at",
         "created_at",
     }
+    assert data["refund_due"] is None
+    assert data["cancelled_at"] is None
     assert data["status"] == "pending"
     assert data["client_id"] == str(client.id)
     (stored,) = await bookings_in_db(db_session)

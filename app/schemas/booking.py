@@ -26,4 +26,6 @@ class BookingResponse(BaseModel):
     starts_at: datetime
     ends_at: datetime
     status: BookingStatus
+    refund_due: bool | None
+    cancelled_at: datetime | None
     created_at: datetime
