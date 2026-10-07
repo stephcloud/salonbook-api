@@ -14,7 +14,7 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.db.session import async_session_maker, engine
-from app.services.payments import list_refunds_due, process_refund
+from app.services.payments import list_refunds_due, try_refund
 from app.services.paystack import PaystackClient, get_paystack_client
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ async def run_once(
         paystack = get_paystack_client()
     sent = 0
     for payment_id in await list_refunds_due(async_session_maker, now, BATCH_SIZE):
-        if await process_refund(async_session_maker, paystack, payment_id, now):
+        if await try_refund(async_session_maker, paystack, payment_id, now):
             sent += 1
     return sent
 

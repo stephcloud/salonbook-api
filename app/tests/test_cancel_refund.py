@@ -16,7 +16,7 @@ from app.models.booking import Booking, BookingStatus
 from app.models.payment import PaymentStatus
 from app.models.user import User, UserRole
 from app.services import bookings as booking_service
-from app.tests.payment_helpers import Scenario, make_scenario, reload
+from app.tests.payment_helpers import Scenario, make_scenario, reload, until
 from app.tests.paystack_fakes import FakePaystack, charge_success_body, webhook_headers
 from app.tests.test_salons_api import make_user
 
@@ -143,17 +143,28 @@ async def test_simultaneous_cancels_refund_once(
 ) -> None:
     scenario = await make_scenario(db_session, **PAID_AND_CONFIRMED)
 
-    async def slow(_: str) -> None:
-        await asyncio.sleep(0.2)  # keep one refund in flight while the others arrive
+    release = asyncio.Event()
 
-    fake_paystack.on_refund = slow
+    async def hold(_: str) -> None:
+        await release.wait()  # one refund stays in flight until we say so
 
-    responses = await asyncio.gather(
-        *(
+    fake_paystack.on_refund = hold
+
+    requests = [
+        asyncio.create_task(
             db_client.post(cancel_url(scenario), headers=scenario.headers)
-            for _ in range(4)
+        )
+        for _ in range(4)
+    ]
+    # One request is inside Paystack; the other three have already returned.
+    await until(
+        lambda: (
+            len(fake_paystack.refund_calls) == 1
+            and sum(r.done() for r in requests) == 3
         )
     )
+    release.set()
+    responses = await asyncio.gather(*requests)
 
     assert [r.status_code for r in responses] == [200] * 4
     assert len(fake_paystack.refund_calls) == 1

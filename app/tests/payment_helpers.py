@@ -1,6 +1,8 @@
 """Scenario builders for payment tests: a booking plus its payment, straight in the DB."""
 
+import asyncio
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -116,3 +118,17 @@ async def all_payments(db_session: AsyncSession) -> list[Payment]:
         select(Payment).execution_options(populate_existing=True)
     )
     return list(result.scalars())
+
+
+async def until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
+    """Wait for `condition` to become true; fail the test if it takes too long.
+
+    For tests that must hold one call "in flight" while others run: wait for the state
+    that proves it, instead of sleeping and hoping it has been reached.
+    """
+
+    async def poll() -> None:
+        while not condition():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout)
