@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from app.models.booking import BookingStatus
+from app.models.payment import PaymentStatus
 
 
 class BookingCreate(BaseModel):
@@ -29,3 +30,10 @@ class BookingResponse(BaseModel):
     refund_due: bool | None
     cancelled_at: datetime | None
     created_at: datetime
+
+
+class BookingDetailResponse(BookingResponse):
+    """One booking plus its latest payment (both None until the client starts paying)."""
+
+    payment_status: PaymentStatus | None
+    payment_amount: int | None
