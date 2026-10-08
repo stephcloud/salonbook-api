@@ -152,6 +152,50 @@ async def cancel_booking(
         raise
 
 
+async def get_booking_detail(
+    session: AsyncSession, booking_id: uuid.UUID, user: User
+) -> tuple[Booking, Payment | None]:
+    """A booking and its latest payment, for its client or its salon's owner only.
+
+    Unknown id is 404, anyone else 403 (same as cancel). Read-only: takes no lock.
+    """
+    booking = await session.get(Booking, booking_id)
+    if booking is None:
+        raise not_found()
+    if booking.client_id != user.id:
+        stylist = await session.get(User, booking.stylist_id)
+        salon = (
+            await session.get(Salon, stylist.salon_id)
+            if stylist is not None and stylist.salon_id is not None
+            else None
+        )
+        if salon is None or salon.owner_id != user.id:
+            raise _forbidden()
+    payment = (
+        await session.execute(
+            select(Payment)
+            .where(Payment.booking_id == booking.id)
+            .order_by(Payment.created_at.desc(), Payment.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return booking, payment
+
+
+async def list_client_bookings(
+    session: AsyncSession, client: User, limit: int, offset: int
+) -> list[Booking]:
+    """The client's own bookings, newest start first."""
+    result = await session.execute(
+        select(Booking)
+        .where(Booking.client_id == client.id)
+        .order_by(Booking.starts_at.desc(), Booking.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(result.scalars())
+
+
 async def _cancel_booking(
     session: AsyncSession, booking_id: uuid.UUID, user: User, now: datetime
 ) -> Booking:
