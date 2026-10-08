@@ -31,7 +31,7 @@ Pricing note: some salons only quote the final price after seeing the client's h
 - Services: POST/GET /salons/{id}/services, PATCH/DELETE /services/{id}
 - Stylists: POST /salons/{id}/stylists, PUT /stylists/{id}/services, PUT /stylists/{id}/availability
 - Availability: GET /stylists/{id}/slots?service_id=&date=
-- Bookings: POST /bookings (clients only; re-checks the slot, creates a pending booking, caps a client at 3 unexpired pending bookings, cancels the stylist's lapsed pending bookings in the same transaction; Paystack init and the payments row come in the payments step), GET /bookings (own), POST /bookings/{id}/cancel, POST /bookings/{id}/reschedule
+- Bookings: POST /bookings (clients only; re-checks the slot, creates a pending booking, caps a client at 3 unexpired pending bookings, cancels the stylist's lapsed pending bookings in the same transaction; Paystack init and the payments row come in the payments step), GET /bookings (the current client's own, paginated, newest start first), GET /bookings/{id} (the booking's client or its salon's owner; 404 unknown, 403 anyone else; returns status, refund_due, starts_at and the latest payment's status and amount, both null if none), POST /bookings/{id}/pay, POST /bookings/{id}/cancel, POST /bookings/{id}/reschedule
 - Payments: POST /payments/webhook (Paystack, verify signature)
 
 ## Environment variables (names only, never values)
