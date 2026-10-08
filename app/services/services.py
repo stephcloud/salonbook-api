@@ -2,12 +2,15 @@ import uuid
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.service import Service
 from app.models.user import User
 from app.schemas.service import ServiceCreate, ServiceUpdate, check_price_matches_type
 from app.services.salons import get_owned_salon, get_salon
+
+FOREIGN_KEY_VIOLATION = "23503"
 
 
 async def create_service(
@@ -75,6 +78,20 @@ async def update_service(
 async def delete_service(
     session: AsyncSession, service_id: uuid.UUID, user: User
 ) -> None:
+    """Delete a service, unless a booking still references it (409).
+
+    Bookings keep their service (`ON DELETE RESTRICT`) so history stays intact. The
+    database decides, so a booking created at the same moment can't slip past a check.
+    """
     service = await _get_owned_service(session, service_id, user)
-    await session.delete(service)
-    await session.commit()
+    try:
+        await session.delete(service)
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        if getattr(exc.orig, "sqlstate", None) != FOREIGN_KEY_VIOLATION:
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This service has bookings and cannot be deleted.",
+        ) from None
