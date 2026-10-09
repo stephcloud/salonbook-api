@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Enum, ForeignKey, text
+from sqlalchemy import CheckConstraint, Column, DateTime, Enum, ForeignKey, String, text
 from sqlmodel import Field, SQLModel
 
 
@@ -51,6 +51,10 @@ class User(SQLModel, table=True):
             nullable=True,
             index=True,
         ),
+    )
+    # Profile photo URL (stylists show one on the public list). Only the URL is stored.
+    image_url: str | None = Field(
+        default=None, sa_column=Column(String(500), nullable=True)
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

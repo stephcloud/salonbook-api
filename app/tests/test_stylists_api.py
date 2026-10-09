@@ -240,7 +240,7 @@ async def test_public_list_has_only_id_name_service_ids(
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
-    assert set(data[0]) == {"id", "name", "service_ids"}
+    assert set(data[0]) == {"id", "name", "service_ids", "image_url"}
     assert data[0]["id"] == str(stylist.id)
     assert data[0]["service_ids"] == [str(service.id)]
     assert "email" not in data[0]

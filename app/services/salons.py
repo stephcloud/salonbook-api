@@ -55,8 +55,11 @@ async def update_salon(
     session: AsyncSession, salon_id: uuid.UUID, user: User, data: SalonUpdate
 ) -> Salon:
     salon = await get_owned_salon(session, salon_id, user)
-    for field, value in data.model_dump(exclude_none=True).items():
-        setattr(salon, field, value)
+    for field, value in data.model_dump(exclude_unset=True).items():
+        # An explicit null only means "clear" for the optional image; for the required
+        # fields it is ignored, as before.
+        if value is not None or field == "image_url":
+            setattr(salon, field, value)
     session.add(salon)
     await session.commit()
     await session.refresh(salon)
