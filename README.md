@@ -45,11 +45,14 @@ All money values are integers in **kobo** (divide by 100 for naira). Times are s
 |---|---|
 | auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` |
 | salons and services | CRUD, owner only for writes, public paginated reads |
+| my salons | `GET /salons/mine` (owner only: 401 without a token, 403 for other roles) |
 | stylists | created by the salon owner, service assignment |
 | availability | owner sets rules, `GET` reads them |
-| slots | `GET /stylists/{id}/slots` (public) |
+| slots | `GET /stylists/{id}/slots` (any signed-in user; 401 without a token) |
 | bookings | `POST /bookings`, `GET /bookings`, `GET /bookings/{id}`, `POST /bookings/{id}/pay`, `POST /bookings/{id}/cancel` |
 | payments | `POST /payments/webhook` (public, authenticated by signature) |
+
+`GET /bookings` and `GET /bookings/{id}` also return nested `salon` (id, name, address, phone, cancellation_hours, deposit_amount, image_url), `service` (id, name, duration_minutes, price_type, price) and `stylist` (id, name, image_url) summaries, loaded in one joined query. No emails or Paystack fields are included.
 
 See `/docs` for exact request and response schemas.
 

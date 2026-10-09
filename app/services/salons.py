@@ -34,6 +34,19 @@ async def list_salons(session: AsyncSession, limit: int, offset: int) -> list[Sa
     return list(result.scalars())
 
 
+async def list_owned_salons(
+    session: AsyncSession, owner: User, limit: int, offset: int
+) -> list[Salon]:
+    result = await session.execute(
+        select(Salon)
+        .where(Salon.owner_id == owner.id)
+        .order_by(Salon.created_at, Salon.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(result.scalars())
+
+
 async def get_salon(session: AsyncSession, salon_id: uuid.UUID) -> Salon:
     salon = await session.get(Salon, salon_id)
     if salon is None:
