@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # Same image as docker-compose.yml; ships contrib, so btree_gist is available.
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: salonbook_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d salonbook_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Throwaway values for CI only. No real secrets live in this file.
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/salonbook_test
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-throwaway-secret-key-not-a-real-secret-0000
+      ENVIRONMENT: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13" # matches FROM python:3.13-slim in the Dockerfile
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Apply migrations
+        run: alembic upgrade head
+
+      - name: Tests
+        run: pytest app/tests
+
+      - name: Dependency audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
