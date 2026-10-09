@@ -34,6 +34,18 @@ async def list_salons(session: SessionDep, page: PaginationDep) -> list[SalonRes
     return [SalonResponse.model_validate(s) for s in salons]
 
 
+# The signed-in owner's own salons. Declared before "/{salon_id}" so "mine" is not
+# parsed as an id.
+@router.get("/mine", response_model=list[SalonResponse])
+async def list_my_salons(
+    session: SessionDep, owner: Owner, page: PaginationDep
+) -> list[SalonResponse]:
+    salons = await salon_service.list_owned_salons(
+        session, owner, page.limit, page.offset
+    )
+    return [SalonResponse.model_validate(s) for s in salons]
+
+
 # Public.
 @router.get("/{salon_id}", response_model=SalonResponse)
 async def get_salon(salon_id: uuid.UUID, session: SessionDep) -> SalonResponse:

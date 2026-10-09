@@ -194,6 +194,9 @@ async def test_detail_response_has_exactly_the_expected_keys(
         "refund_due",
         "cancelled_at",
         "created_at",
+        "salon",
+        "service",
+        "stylist",
         "payment_status",
         "payment_amount",
     }

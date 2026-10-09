@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select, update
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -14,6 +14,12 @@ from app.models.service import Service
 from app.models.user import User
 from app.schemas.booking import (
     BookingCreate,
+    BookingResponse,
+    BookingSalonSummary,
+    BookingServiceSummary,
+    BookingStylistSummary,
+    ClientBookingDetailResponse,
+    ClientBookingResponse,
     OwnerBookingItem,
     OwnerBookingService,
     OwnerBookingStylist,
@@ -160,25 +166,66 @@ async def cancel_booking(
         raise
 
 
+def _booking_with_summaries() -> Select[tuple[Booking, Salon, Service, User]]:
+    """Booking + its salon, service and stylist in one joined SELECT (no N+1).
+
+    The salon is the service's salon (Booking -> Service -> Salon). Inner joins are
+    safe: the booking's stylist and service are RESTRICT foreign keys, and
+    services.salon_id is NOT NULL (unlike users.salon_id, which is null for non-stylists).
+    """
+    stylist = aliased(User)
+    return (
+        select(Booking, Salon, Service, stylist)
+        .join(stylist, stylist.id == Booking.stylist_id)
+        .join(Service, Service.id == Booking.service_id)
+        .join(Salon, Salon.id == Service.salon_id)
+    )
+
+
+def _client_booking_fields(
+    booking: Booking, salon: Salon, service: Service, stylist: User
+) -> dict[str, object]:
+    """Flat booking fields plus the nested summaries, built from explicit fields."""
+    return {
+        **BookingResponse.model_validate(booking).model_dump(),
+        "salon": BookingSalonSummary(
+            id=salon.id,
+            name=salon.name,
+            address=salon.address,
+            phone=salon.phone,
+            cancellation_hours=salon.cancellation_hours,
+            deposit_amount=salon.deposit_amount,
+            image_url=salon.image_url,
+        ),
+        "service": BookingServiceSummary(
+            id=service.id,
+            name=service.name,
+            duration_minutes=service.duration_minutes,
+            price_type=service.price_type,
+            price=service.price,
+        ),
+        "stylist": BookingStylistSummary(
+            id=stylist.id, name=stylist.name, image_url=stylist.image_url
+        ),
+    }
+
+
 async def get_booking_detail(
     session: AsyncSession, booking_id: uuid.UUID, user: User
-) -> tuple[Booking, Payment | None]:
-    """A booking and its latest payment, for its client or its salon's owner only.
+) -> ClientBookingDetailResponse:
+    """A booking, its summaries and latest payment, for its client or salon owner only.
 
     Unknown id is 404, anyone else 403 (same as cancel). Read-only: takes no lock.
+    Two queries: the joined booking, then the latest payment.
     """
-    booking = await session.get(Booking, booking_id)
-    if booking is None:
+    row = (
+        await session.execute(_booking_with_summaries().where(Booking.id == booking_id))
+    ).one_or_none()
+    if row is None:
         raise not_found()
-    if booking.client_id != user.id:
-        stylist = await session.get(User, booking.stylist_id)
-        salon = (
-            await session.get(Salon, stylist.salon_id)
-            if stylist is not None and stylist.salon_id is not None
-            else None
-        )
-        if salon is None or salon.owner_id != user.id:
-            raise _forbidden()
+    booking, salon, service, stylist = row
+    if booking.client_id != user.id and salon.owner_id != user.id:
+        raise _forbidden()
     payment = (
         await session.execute(
             select(Payment)
@@ -187,21 +234,28 @@ async def get_booking_detail(
             .limit(1)
         )
     ).scalar_one_or_none()
-    return booking, payment
+    return ClientBookingDetailResponse(
+        **_client_booking_fields(booking, salon, service, stylist),
+        payment_status=payment.status if payment else None,
+        payment_amount=payment.amount if payment else None,
+    )
 
 
 async def list_client_bookings(
     session: AsyncSession, client: User, limit: int, offset: int
-) -> list[Booking]:
-    """The client's own bookings, newest start first."""
-    result = await session.execute(
-        select(Booking)
+) -> list[ClientBookingResponse]:
+    """The client's own bookings, newest start first. One query for the whole page."""
+    rows = await session.execute(
+        _booking_with_summaries()
         .where(Booking.client_id == client.id)
         .order_by(Booking.starts_at.desc(), Booking.id)
         .limit(limit)
         .offset(offset)
     )
-    return list(result.scalars())
+    return [
+        ClientBookingResponse(**_client_booking_fields(b, salon, service, stylist))
+        for b, salon, service, stylist in rows
+    ]
 
 
 async def list_salon_bookings(

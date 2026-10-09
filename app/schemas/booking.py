@@ -5,6 +5,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from app.models.booking import BookingStatus
 from app.models.payment import PaymentStatus
+from app.models.service import PriceType
 
 
 class BookingCreate(BaseModel):
@@ -32,8 +33,44 @@ class BookingResponse(BaseModel):
     created_at: datetime
 
 
-class BookingDetailResponse(BookingResponse):
-    """One booking plus its latest payment (both None until the client starts paying)."""
+class BookingSalonSummary(BaseModel):
+    """Explicit field list: no owner_id, nothing private."""
+
+    id: uuid.UUID
+    name: str
+    address: str
+    phone: str
+    cancellation_hours: int
+    deposit_amount: int
+    image_url: str | None
+
+
+class BookingServiceSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    duration_minutes: int
+    price_type: PriceType
+    price: int | None  # null when price_type is quote
+
+
+class BookingStylistSummary(BaseModel):
+    """No email or role: just what the client needs to recognise the stylist."""
+
+    id: uuid.UUID
+    name: str
+    image_url: str | None
+
+
+class ClientBookingResponse(BookingResponse):
+    """A booking with the salon, service and stylist summaries nested in."""
+
+    salon: BookingSalonSummary
+    service: BookingServiceSummary
+    stylist: BookingStylistSummary
+
+
+class ClientBookingDetailResponse(ClientBookingResponse):
+    """Plus the latest payment (both None until the client starts paying)."""
 
     payment_status: PaymentStatus | None
     payment_amount: int | None
