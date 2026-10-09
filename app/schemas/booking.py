@@ -37,3 +37,32 @@ class BookingDetailResponse(BookingResponse):
 
     payment_status: PaymentStatus | None
     payment_amount: int | None
+
+
+class OwnerBookingStylist(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class OwnerBookingService(BaseModel):
+    id: uuid.UUID
+    name: str
+    duration_minutes: int
+
+
+class OwnerBookingItem(BaseModel):
+    """One row of a salon owner's booking list.
+
+    Explicit field list on purpose: the client is shown by name only (no email, no id),
+    and nothing from Paystack (reference, access code, checkout URL) is included.
+    """
+
+    id: uuid.UUID
+    status: BookingStatus
+    starts_at: datetime
+    ends_at: datetime
+    refund_due: bool | None
+    payment_status: PaymentStatus | None
+    stylist: OwnerBookingStylist
+    service: OwnerBookingService
+    client_name: str

@@ -1,17 +1,25 @@
 import uuid
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.booking import ACTIVE_STATUSES, Booking, BookingStatus
 from app.models.payment import Payment, PaymentStatus
 from app.models.salon import Salon
+from app.models.service import Service
 from app.models.user import User
-from app.schemas.booking import BookingCreate
+from app.schemas.booking import (
+    BookingCreate,
+    OwnerBookingItem,
+    OwnerBookingService,
+    OwnerBookingStylist,
+)
 from app.services.refund_policy import is_refundable
+from app.services.salons import get_owned_salon
 from app.services.slots import (
     MAX_ADVANCE_DAYS,
     get_slots,
@@ -194,6 +202,83 @@ async def list_client_bookings(
         .offset(offset)
     )
     return list(result.scalars())
+
+
+async def list_salon_bookings(
+    session: AsyncSession,
+    salon_id: uuid.UUID,
+    owner: User,
+    limit: int,
+    offset: int,
+    *,
+    booking_status: BookingStatus | None = None,
+    stylist_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[OwnerBookingItem]:
+    """Every booking at a salon (cancelled and expired too), oldest start first.
+
+    Salon owner only: 404 unknown salon, 403 anyone else's. Scoped by the stylists who
+    work at this salon, so a `stylist_id` from another salon matches nothing. The dates
+    are salon-local days, both inclusive. Read-only: takes no lock.
+    """
+    await get_owned_salon(session, salon_id, owner)
+    stylist = aliased(User)
+    client = aliased(User)
+    latest_payment_status = (
+        select(Payment.status)
+        .where(Payment.booking_id == Booking.id)
+        .order_by(Payment.created_at.desc(), Payment.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    query = (
+        select(
+            Booking,
+            latest_payment_status,
+            stylist.name,
+            Service.name,
+            Service.duration_minutes,
+            client.name,
+        )
+        .join(stylist, stylist.id == Booking.stylist_id)
+        .join(client, client.id == Booking.client_id)
+        .join(Service, Service.id == Booking.service_id)
+        .where(stylist.salon_id == salon_id)
+    )
+    if booking_status is not None:
+        query = query.where(Booking.status == booking_status)
+    if stylist_id is not None:
+        query = query.where(Booking.stylist_id == stylist_id)
+    tz = salon_timezone()
+    if date_from is not None:
+        query = query.where(
+            Booking.starts_at >= datetime.combine(date_from, time.min, tz)
+        )
+    if date_to is not None:
+        query = query.where(
+            Booking.starts_at
+            < datetime.combine(date_to + timedelta(days=1), time.min, tz)
+        )
+    rows = await session.execute(
+        query.order_by(Booking.starts_at, Booking.id).limit(limit).offset(offset)
+    )
+    return [
+        OwnerBookingItem(
+            id=b.id,
+            status=b.status,
+            starts_at=b.starts_at,
+            ends_at=b.ends_at,
+            refund_due=b.refund_due,
+            payment_status=payment_status,
+            stylist=OwnerBookingStylist(id=b.stylist_id, name=stylist_name),
+            service=OwnerBookingService(
+                id=b.service_id, name=service_name, duration_minutes=duration
+            ),
+            client_name=client_name,
+        )
+        for b, payment_status, stylist_name, service_name, duration, client_name in rows
+    ]
 
 
 async def _cancel_booking(

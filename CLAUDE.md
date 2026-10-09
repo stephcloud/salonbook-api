@@ -15,8 +15,8 @@
 Three tests prove it: (a) two concurrent bookings for one slot, only one succeeds; (b) refund boundary at exactly 24h; (c) same webhook replayed twice changes state once.
 
 ## Data model (7 tables)
-- `users`: id, name, email, password_hash, role (owner | stylist | client)
-- `salons`: id, owner_id, name, address, phone, cancellation_hours (default 24), deposit_amount
+- `users`: id, name, email, password_hash, role (owner | stylist | client), salon_id (stylists only), image_url (nullable; a stylist's photo)
+- `salons`: id, owner_id, name, address, phone, cancellation_hours (default 24), deposit_amount, image_url (nullable)
 - `services`: id, salon_id, name, duration_minutes, price_type (fixed | quote), price (nullable when quote)
 - `stylist_services`: stylist_id, service_id
 - `availability_rules`: id, stylist_id, weekday, start_time, end_time, plus breaks and days off
@@ -27,9 +27,10 @@ Pricing note: some salons only quote the final price after seeing the client's h
 
 ## Endpoints (all under /api/v1)
 - Auth: POST /auth/register, POST /auth/login, GET /auth/me
-- Salons: POST/GET /salons, GET/PATCH /salons/{id} (owner only for writes)
+- Salons: POST/GET /salons, GET/PATCH /salons/{id} (owner only for writes); image_url is optional, https:// only, max 500 chars, and PATCH with `null` clears it. The public stylist list returns only id, name, service_ids and image_url.
+- Salon bookings: GET /salons/{id}/bookings (that salon's owner only: 403 anyone else, 404 unknown salon; paginated, ordered by starts_at; filters status, stylist_id, from/to as salon-local dates, inclusive; includes cancelled; returns id, status, starts_at, ends_at, refund_due, payment status, stylist (id, name), service (id, name, duration) and the client's name only, never email or Paystack fields)
 - Services: POST/GET /salons/{id}/services, PATCH/DELETE /services/{id}
-- Stylists: POST /salons/{id}/stylists, PUT /stylists/{id}/services, PUT /stylists/{id}/availability
+- Stylists: POST /salons/{id}/stylists (optional image_url; there is no stylist update endpoint yet), PUT /stylists/{id}/services, PUT /stylists/{id}/availability
 - Availability: GET /stylists/{id}/slots?service_id=&date=
 - Bookings: POST /bookings (clients only; re-checks the slot, creates a pending booking, caps a client at 3 unexpired pending bookings, cancels the stylist's lapsed pending bookings in the same transaction; Paystack init and the payments row come in the payments step), GET /bookings (the current client's own, paginated, newest start first), GET /bookings/{id} (the booking's client or its salon's owner; 404 unknown, 403 anyone else; returns status, refund_due, starts_at and the latest payment's status and amount, both null if none), POST /bookings/{id}/pay, POST /bookings/{id}/cancel, POST /bookings/{id}/reschedule
 - Payments: POST /payments/webhook (Paystack, verify signature)
