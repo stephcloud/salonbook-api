@@ -28,6 +28,7 @@ async def create_stylist(
         password_hash=await asyncio.to_thread(hash_password, data.password),
         role=UserRole.STYLIST,
         salon_id=salon_id,
+        image_url=data.image_url,
     )
     session.add(stylist)
     try:
@@ -62,7 +63,10 @@ async def list_salon_stylists(
             services_by_stylist[stylist_id].append(service_id)
     return [
         PublicStylistResponse(
-            id=s.id, name=s.name, service_ids=services_by_stylist[s.id]
+            id=s.id,
+            name=s.name,
+            image_url=s.image_url,
+            service_ids=services_by_stylist[s.id],
         )
         for s in stylists
     ]

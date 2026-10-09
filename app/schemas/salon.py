@@ -4,6 +4,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app.schemas.image import ImageUrl
+
 Name = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)
 ]
@@ -24,6 +26,7 @@ class SalonCreate(BaseModel):
     name: Name
     address: Address
     phone: Phone
+    image_url: ImageUrl | None = None
     cancellation_hours: CancellationHours = 24
     deposit_amount: DepositAmount
 
@@ -34,6 +37,8 @@ class SalonUpdate(BaseModel):
     name: Name | None = None
     address: Address | None = None
     phone: Phone | None = None
+    # Send null to clear it (see update_salon).
+    image_url: ImageUrl | None = None
     cancellation_hours: CancellationHours | None = None
     deposit_amount: DepositAmount | None = None
 
@@ -46,6 +51,7 @@ class SalonResponse(BaseModel):
     name: str
     address: str
     phone: str
+    image_url: str | None
     cancellation_hours: int
     deposit_amount: int
     created_at: datetime

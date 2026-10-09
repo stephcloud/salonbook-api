@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     text,
 )
 from sqlmodel import Field, SQLModel
@@ -30,6 +31,9 @@ class Salon(SQLModel, table=True):
     name: str = Field(max_length=100)
     address: str = Field(max_length=255)
     phone: str = Field(max_length=30)
+    image_url: str | None = Field(
+        default=None, sa_column=Column(String(500), nullable=True)
+    )
     cancellation_hours: int = Field(
         default=24, sa_column=Column(Integer, server_default=text("24"), nullable=False)
     )

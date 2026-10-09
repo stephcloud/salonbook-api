@@ -2,6 +2,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.image import ImageUrl
 from app.schemas.user import Name, Password
 
 
@@ -11,6 +12,7 @@ class StylistCreate(BaseModel):
     name: Name
     email: EmailStr
     password: Password
+    image_url: ImageUrl | None = None
 
 
 class StylistResponse(BaseModel):
@@ -23,6 +25,7 @@ class StylistResponse(BaseModel):
     email: str
     role: str
     salon_id: uuid.UUID
+    image_url: str | None
 
 
 class StylistServicesUpdate(BaseModel):
@@ -41,4 +44,5 @@ class PublicStylistResponse(BaseModel):
 
     id: uuid.UUID
     name: str
+    image_url: str | None
     service_ids: list[uuid.UUID]

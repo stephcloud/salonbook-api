@@ -1,12 +1,16 @@
 import uuid
+from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import PaginationDep, SessionDep, require_role
+from app.models.booking import BookingStatus
 from app.models.user import User, UserRole
+from app.schemas.booking import OwnerBookingItem
 from app.schemas.salon import SalonCreate, SalonResponse, SalonUpdate
 from app.schemas.service import ServiceCreate, ServiceResponse
+from app.services import bookings as booking_service
 from app.services import salons as salon_service
 from app.services import services as service_service
 
@@ -66,3 +70,33 @@ async def list_services(
         session, salon_id, page.limit, page.offset
     )
     return [ServiceResponse.model_validate(s) for s in services]
+
+
+# Owner of this salon only (checked in the service).
+@router.get("/{salon_id}/bookings", response_model=list[OwnerBookingItem])
+async def list_salon_bookings(
+    salon_id: uuid.UUID,
+    session: SessionDep,
+    owner: Owner,
+    page: PaginationDep,
+    booking_status: Annotated[BookingStatus | None, Query(alias="status")] = None,
+    stylist_id: Annotated[uuid.UUID | None, Query()] = None,
+    date_from: Annotated[date | None, Query(alias="from")] = None,
+    date_to: Annotated[date | None, Query(alias="to")] = None,
+) -> list[OwnerBookingItem]:
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="'from' must not be after 'to'",
+        )
+    return await booking_service.list_salon_bookings(
+        session,
+        salon_id,
+        owner,
+        page.limit,
+        page.offset,
+        booking_status=booking_status,
+        stylist_id=stylist_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
