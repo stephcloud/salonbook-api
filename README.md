@@ -6,6 +6,7 @@ Backend for SalonBook, a salon booking MVP that takes a deposit at booking time 
 - **Interactive docs:** https://salonbook-api-etyz.onrender.com/docs
 - **Health check:** https://salonbook-api-etyz.onrender.com/health
 - **Frontend repo:** `salonbook-web` (Next.js, Vercel)
+- **Frontend / live site:** https://salonbook-web-theta.vercel.app
 
 > The live service runs on Render's free tier, so the first request after a period of inactivity can take about 50 seconds.
 
