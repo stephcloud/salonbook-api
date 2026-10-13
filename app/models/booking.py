@@ -82,6 +82,20 @@ class Booking(SQLModel, table=True):
     cancelled_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
+    # One marker per booking per email. Set by an atomic claim just before sending and
+    # cleared again if the send fails, so each email goes out at most once. NULL = not sent.
+    confirmation_email_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    owner_confirmation_email_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    cancellation_email_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    owner_cancellation_email_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
