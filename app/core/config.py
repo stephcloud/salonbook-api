@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     SALON_UTC_OFFSET_MINUTES: int = Field(default=60, ge=-720, le=840)
     PAYSTACK_SECRET_KEY: str = ""
     RESEND_API_KEY: str = ""
+    # Transactional email (Brevo). All optional: with the key or the sender address
+    # missing, booking emails are skipped with a log line and the app runs as normal.
+    BREVO_API_KEY: str = ""
+    EMAIL_FROM_ADDRESS: str = ""
+    EMAIL_FROM_NAME: str = "SalonBook"
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

@@ -82,6 +82,9 @@ Postgres is mapped to host port **5433** (to avoid clashing with a local Postgre
 | `CORS_ORIGINS` | one origin, comma-separated list, or JSON list. No `*`, no trailing slash |
 | `SALON_UTC_OFFSET_MINUTES` | `60` for WAT |
 | `PAYSTACK_SECRET_KEY` | test key (`sk_test_...`); required in production |
+| `BREVO_API_KEY` | Brevo transactional email key. Optional: empty means booking emails are skipped |
+| `EMAIL_FROM_ADDRESS` | verified Brevo sender address. Optional, same as above |
+| `EMAIL_FROM_NAME` | sender display name, default `SalonBook` |
 
 ## Tests
 

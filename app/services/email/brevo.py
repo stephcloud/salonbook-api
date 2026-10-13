@@ -1,0 +1,63 @@
+"""Brevo transactional email (https://developers.brevo.com/reference/sendtransacemail)."""
+
+import httpx
+
+from app.core.config import settings
+from app.services.email.base import EmailMessage, EmailSender, EmailSendError
+
+BREVO_BASE_URL = "https://api.brevo.com/v3"
+BREVO_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+DEFAULT_FROM_NAME = "SalonBook"
+
+
+class BrevoSender:
+    def __init__(
+        self,
+        api_key: str,
+        from_address: str,
+        from_name: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._from_address = from_address
+        self._from_name = from_name
+        self._transport = transport
+
+    def _http(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=BREVO_BASE_URL,
+            timeout=BREVO_TIMEOUT,
+            transport=self._transport,
+            headers={"api-key": self._api_key, "accept": "application/json"},
+        )
+
+    async def send(self, message: EmailMessage) -> None:
+        payload = {
+            "sender": {"email": self._from_address, "name": self._from_name},
+            "to": [{"email": message.to_address, "name": message.to_name}],
+            "subject": message.subject,
+            "textContent": message.text,
+            "htmlContent": message.html,
+        }
+        try:
+            async with self._http() as http:
+                response = await http.post("/smtp/email", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # The status code only: the body and the request can echo the address.
+            raise EmailSendError(f"brevo answered {exc.response.status_code}") from None
+        except httpx.HTTPError as exc:
+            raise EmailSendError(
+                f"brevo request failed: {type(exc).__name__}"
+            ) from None
+
+
+def get_email_sender() -> EmailSender | None:
+    """The configured sender, or None when email is not set up (callers skip sending)."""
+    api_key = settings.BREVO_API_KEY.strip()
+    from_address = settings.EMAIL_FROM_ADDRESS.strip()
+    if not api_key or not from_address:
+        return None
+    return BrevoSender(
+        api_key, from_address, settings.EMAIL_FROM_NAME.strip() or DEFAULT_FROM_NAME
+    )

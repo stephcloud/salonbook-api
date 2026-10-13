@@ -20,7 +20,9 @@ from app.core.config import settings
 from app.db.base import metadata
 from app.db.session import get_session, get_session_maker
 from app.main import app
+from app.services.email.brevo import get_email_sender
 from app.services.paystack import get_paystack_client
+from app.tests.email_fakes import FakeEmailSender
 from app.tests.paystack_fakes import TEST_PAYSTACK_SECRET, FakePaystack
 
 TEST_DB_NAME = "salonbook_test"
@@ -51,6 +53,20 @@ def fake_paystack() -> Iterator[FakePaystack]:
         yield fake
     finally:
         app.dependency_overrides.pop(get_paystack_client, None)
+
+
+@pytest.fixture(autouse=True)
+def fake_email() -> Iterator[FakeEmailSender]:
+    """Replaces the email sender: no network, and sent messages are recorded.
+
+    Autouse, so no test can reach Brevo by accident.
+    """
+    fake = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: fake
+    try:
+        yield fake
+    finally:
+        app.dependency_overrides.pop(get_email_sender, None)
 
 
 @pytest_asyncio.fixture
