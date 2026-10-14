@@ -1,8 +1,17 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Enum, ForeignKey, String, text
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    String,
+    text,
+)
 from sqlmodel import Field, SQLModel
 
 
@@ -55,6 +64,11 @@ class User(SQLModel, table=True):
     # Profile photo URL (stylists show one on the public list). Only the URL is stored.
     image_url: str | None = Field(
         default=None, sa_column=Column(String(500), nullable=True)
+    )
+    # Owners only: the Lagos date of the last daily summary email sent (or given up on after
+    # a permanent rejection). Claimed with an atomic UPDATE, so one summary per owner per day.
+    daily_summary_sent_on: date | None = Field(
+        default=None, sa_column=Column(Date, nullable=True)
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
