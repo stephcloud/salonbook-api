@@ -5,9 +5,16 @@ from typing import Annotated
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+MIN_CRON_SECRET_LENGTH = 32
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        # A failed validation must not echo the raw settings (keys, DB password) into logs.
+        hide_input_in_errors=True,
+    )
 
     DATABASE_URL: str = (
         "postgresql+asyncpg://postgres:postgres@localhost:5432/salonbook"
@@ -30,6 +37,9 @@ class Settings(BaseSettings):
     BREVO_API_KEY: SecretStr = SecretStr("")
     EMAIL_FROM_ADDRESS: str = ""
     EMAIL_FROM_NAME: str = "SalonBook"
+    # Shared secret the external scheduler sends in X-Cron-Secret to POST
+    # /api/v1/internal/reminders/run. Empty means the endpoint answers 503 (fails closed).
+    CRON_SECRET: SecretStr = SecretStr("")
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -72,6 +82,19 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "SECRET_KEY must be a random value of at least 32 characters in production"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def reject_short_cron_secret(self) -> "Settings":
+        # Empty (or blank) is allowed: the scheduler endpoint is then off. A secret that
+        # is set must be long enough to resist guessing. Only the length is reported.
+        secret = self.CRON_SECRET.get_secret_value().strip()
+        if secret and len(secret) < MIN_CRON_SECRET_LENGTH:
+            raise ValueError(
+                f"CRON_SECRET is set but only {len(secret)} characters long; it must be "
+                f"at least {MIN_CRON_SECRET_LENGTH} (or leave it empty to turn the "
+                "scheduler endpoint off)"
             )
         return self
 

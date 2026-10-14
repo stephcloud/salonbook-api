@@ -86,6 +86,7 @@ Postgres is mapped to host port **5433** (to avoid clashing with a local Postgre
 | `BREVO_API_KEY` | Brevo transactional email key. Optional: empty means booking emails are skipped |
 | `EMAIL_FROM_ADDRESS` | verified Brevo sender address. Optional, same as above |
 | `EMAIL_FROM_NAME` | sender display name, default `SalonBook` |
+| `CRON_SECRET` | shared secret the scheduler sends in `X-Cron-Secret` to `POST /api/v1/internal/reminders/run`. At least 32 random characters. Optional: empty turns the endpoint off (503) |
 
 ## Tests
 
