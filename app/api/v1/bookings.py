@@ -14,6 +14,9 @@ from app.schemas.booking import (
 from app.schemas.payment import PaymentResponse
 from app.services import bookings as booking_service
 from app.services import payments as payment_service
+from app.services.email.base import EmailSender
+from app.services.email.brevo import get_email_sender
+from app.services.email.notifications import notify_booking_cancelled
 from app.services.paystack import PaystackClient, get_paystack_client
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
@@ -64,9 +67,10 @@ async def cancel_booking(
     session: SessionDep,
     session_maker: SessionMakerDep,
     paystack: Annotated[PaystackClient, Depends(get_paystack_client)],
+    email_sender: Annotated[EmailSender | None, Depends(get_email_sender)],
     user: ClientOrOwner,
 ) -> BookingResponse:
-    booking, refund_ids = await payment_service.cancel_booking_and_list_refunds(
+    outcome, refund_ids = await payment_service.cancel_booking_and_list_refunds(
         session, booking_id, user
     )
     # The cancel has committed. Send any queued refund now, outside every lock; if
@@ -75,4 +79,15 @@ async def cancel_booking(
         background_tasks.add_task(
             payment_service.try_refund, session_maker, paystack, payment_id
         )
-    return BookingResponse.model_validate(booking)
+    # Only the call that did the cancelling emails, and only for a confirmed (paid)
+    # booking: a repeat or double click sends nothing, and neither does cancelling an
+    # unpaid pending one.
+    if outcome.did_cancel and outcome.was_confirmed:
+        background_tasks.add_task(
+            notify_booking_cancelled,
+            session_maker,
+            email_sender,
+            outcome.booking.id,
+            cancelled_by_owner=outcome.cancelled_by_owner,
+        )
+    return BookingResponse.model_validate(outcome.booking)

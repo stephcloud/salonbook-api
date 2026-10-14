@@ -2,7 +2,7 @@ import json
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str = ""
     # Transactional email (Brevo). All optional: with the key or the sender address
     # missing, booking emails are skipped with a log line and the app runs as normal.
-    BREVO_API_KEY: str = ""
+    # SecretStr: its repr and any settings dump show ********, never the key.
+    BREVO_API_KEY: SecretStr = SecretStr("")
     EMAIL_FROM_ADDRESS: str = ""
     EMAIL_FROM_NAME: str = "SalonBook"
 

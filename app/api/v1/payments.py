@@ -12,6 +12,9 @@ from fastapi import (
 
 from app.api.deps import SessionDep, SessionMakerDep
 from app.services import payments as payment_service
+from app.services.email.base import EmailSender
+from app.services.email.brevo import get_email_sender
+from app.services.email.notifications import notify_booking_confirmed
 from app.services.paystack import PaystackClient, get_paystack_client
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -48,16 +51,23 @@ async def paystack_webhook(
     session: SessionDep,
     session_maker: SessionMakerDep,
     paystack: Annotated[PaystackClient, Depends(get_paystack_client)],
+    email_sender: Annotated[EmailSender | None, Depends(get_email_sender)],
     x_paystack_signature: Annotated[str | None, Header()] = None,
 ) -> dict[str, str]:
     raw_body = await _read_capped_body(request)
-    refund_ids = await payment_service.handle_paystack_event(
+    outcome = await payment_service.handle_paystack_event(
         session, raw_body, x_paystack_signature
     )
     # After the commit, outside the request's transaction: Paystack is never called
     # while a lock is held, and a failure here is retried by the sweeper.
-    for payment_id in refund_ids:
+    for payment_id in outcome.refund_ids:
         background_tasks.add_task(
             payment_service.try_refund, session_maker, paystack, payment_id
+        )
+    # Only bookings this event confirmed (never a replay). Runs after the 200 is sent, and
+    # cannot raise, so a slow or broken email provider never affects Paystack's answer.
+    for booking_id in outcome.confirmed_booking_ids:
+        background_tasks.add_task(
+            notify_booking_confirmed, session_maker, email_sender, booking_id
         )
     return {"status": "ok"}

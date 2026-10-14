@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -158,6 +159,28 @@ async def cancel_booking(
     same transaction, so the decision is applied exactly once. Sending the money to
     Paystack happens after the commit (`payments.process_refund`), never here.
     """
+    return (await cancel_booking_with_outcome(session, booking_id, user, now)).booking
+
+
+@dataclass(frozen=True)
+class CancelOutcome:
+    """What a cancel call did, for the caller's follow-up (emails). Facts, not policy."""
+
+    booking: Booking
+    # True only for the call that moved the booking to cancelled; a repeat is False.
+    did_cancel: bool
+    # The booking had been paid for (confirmed) when it was cancelled.
+    was_confirmed: bool
+    cancelled_by_owner: bool
+
+
+async def cancel_booking_with_outcome(
+    session: AsyncSession,
+    booking_id: uuid.UUID,
+    user: User,
+    now: datetime | None = None,
+) -> CancelOutcome:
+    """`cancel_booking`, plus whether this call did the cancelling, and who and what."""
     now = now or datetime.now(UTC)
     try:
         return await _cancel_booking(session, booking_id, user, now)
@@ -337,7 +360,7 @@ async def list_salon_bookings(
 
 async def _cancel_booking(
     session: AsyncSession, booking_id: uuid.UUID, user: User, now: datetime
-) -> Booking:
+) -> CancelOutcome:
     booking = (
         await session.execute(
             select(Booking)
@@ -366,7 +389,9 @@ async def _cancel_booking(
         # Nothing to write. Commit just ends the transaction (releasing the row lock);
         # rollback would expire the instance and break serialising it.
         await session.commit()
-        return booking
+        return CancelOutcome(
+            booking, did_cancel=False, was_confirmed=False, cancelled_by_owner=False
+        )
     if booking.status not in ACTIVE_STATUSES:
         raise _not_cancellable()
     if booking.starts_at <= now:
@@ -375,7 +400,8 @@ async def _cancel_booking(
     # A pending booking has paid no deposit, so there is nothing to refund. When the
     # salon owner cancels, the client always gets the deposit back: the late-cancel
     # window only applies to a client who backs out.
-    refund_due = booking.status == BookingStatus.CONFIRMED and (
+    was_confirmed = booking.status == BookingStatus.CONFIRMED
+    refund_due = was_confirmed and (
         is_salon_owner
         or (
             salon is not None
@@ -389,7 +415,14 @@ async def _cancel_booking(
     if refund_due:
         await _queue_deposit_refund(session, booking.id)
     await session.commit()
-    return booking
+    return CancelOutcome(
+        booking,
+        did_cancel=True,
+        was_confirmed=was_confirmed,
+        # Owners cannot be a booking's client (POST /bookings is clients only), so the
+        # two roles never overlap here.
+        cancelled_by_owner=is_salon_owner,
+    )
 
 
 async def _queue_deposit_refund(session: AsyncSession, booking_id: uuid.UUID) -> None:

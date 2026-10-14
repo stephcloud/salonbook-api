@@ -3,10 +3,10 @@
 No database, no clock, no network. Times are shown in Africa/Lagos (the API stores UTC).
 
 Refund wording comes only from what the cancel flow actually recorded
-(`services/bookings._cancel_booking`): `refund_due`, who cancelled, whether the booking
-had been confirmed, and the state of the booking's real payment row. The code makes only
-these outcomes, so these are the only ones the emails can state:
-  - a pending booking has paid nothing: no money sentence at all;
+(`services/bookings._cancel_booking`): `refund_due`, who cancelled, and the state of the
+booking's real payment row. Cancellation emails are only sent for a confirmed (paid)
+booking; cancelling an unpaid pending booking sends nothing. The code makes only these
+outcomes, so these are the only ones the emails can state:
   - a confirmed booking with `refund_due` true and a payment queued for refund (or already
     refunded): the deposit is being (or has been) refunded;
   - a confirmed booking cancelled by the client with `refund_due` false and its payment
@@ -60,13 +60,26 @@ class BookingEmailContext:
     # Cancellation facts; unused by the confirmation emails.
     refund_due: bool | None = None
     payment_status: PaymentStatus | None = None
-    was_confirmed: bool = False
     cancelled_by_owner: bool = False
+
+    def __post_init__(self) -> None:
+        # Names, address and phone are free text typed by users. Collapse every run of
+        # whitespace (newlines included) so one cannot add lines to a subject or body.
+        for name in (
+            "salon_name",
+            "salon_address",
+            "salon_phone",
+            "service_name",
+            "stylist_name",
+            "client_name",
+            "owner_name",
+        ):
+            object.__setattr__(self, name, " ".join(getattr(self, name).split()))
 
 
 def refund_outcome(ctx: BookingEmailContext) -> RefundOutcome:
     """What the cancel flow did with the deposit. See the module docstring."""
-    if not ctx.was_confirmed or ctx.payment_status is None:
+    if ctx.payment_status is None:
         return RefundOutcome.NONE
     if ctx.refund_due is True:
         if ctx.payment_status == PaymentStatus.REFUND_PENDING:

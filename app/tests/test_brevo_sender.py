@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from app.core.config import settings
 from app.services.email.base import EmailMessage, EmailSendError
@@ -89,7 +90,7 @@ async def test_a_timeout_becomes_a_send_error() -> None:
 def test_missing_config_gives_no_sender(
     monkeypatch: pytest.MonkeyPatch, api_key: str, from_address: str
 ) -> None:
-    monkeypatch.setattr(settings, "BREVO_API_KEY", api_key)
+    monkeypatch.setattr(settings, "BREVO_API_KEY", SecretStr(api_key))
     monkeypatch.setattr(settings, "EMAIL_FROM_ADDRESS", from_address)
 
     assert get_email_sender() is None
@@ -98,7 +99,7 @@ def test_missing_config_gives_no_sender(
 def test_full_config_gives_a_brevo_sender_with_the_default_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "BREVO_API_KEY", API_KEY)
+    monkeypatch.setattr(settings, "BREVO_API_KEY", SecretStr(API_KEY))
     monkeypatch.setattr(settings, "EMAIL_FROM_ADDRESS", "no-reply@salonbook.test")
     monkeypatch.setattr(settings, "EMAIL_FROM_NAME", "")
 
@@ -106,3 +107,15 @@ def test_full_config_gives_a_brevo_sender_with_the_default_name(
 
     assert isinstance(sender, BrevoSender)
     assert sender._from_name == "SalonBook"
+
+
+def test_the_api_key_never_shows_in_the_settings_repr_or_dump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "BREVO_API_KEY", SecretStr(API_KEY))
+
+    assert API_KEY not in repr(settings)
+    assert API_KEY not in str(settings)
+    assert API_KEY not in str(settings.model_dump())
+    assert API_KEY not in settings.model_dump_json()
+    assert API_KEY not in repr(get_email_sender())

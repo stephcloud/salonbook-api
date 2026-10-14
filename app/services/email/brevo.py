@@ -54,7 +54,7 @@ class BrevoSender:
 
 def get_email_sender() -> EmailSender | None:
     """The configured sender, or None when email is not set up (callers skip sending)."""
-    api_key = settings.BREVO_API_KEY.strip()
+    api_key = settings.BREVO_API_KEY.get_secret_value().strip()
     from_address = settings.EMAIL_FROM_ADDRESS.strip()
     if not api_key or not from_address:
         return None
