@@ -188,3 +188,11 @@ Other deferred ideas live in each entry's **Later** list (Day 7, Day 8 Stage A a
   - **Two sources for Lagos time:** slots use `SALON_UTC_OFFSET_MINUTES`; emails and the 7:00 window use `Africa/Lagos`. Same today (UTC+1); unify if a salon ever sits elsewhere.
   - **Unset `CRON_SECRET` is silent:** reminders just stop. Consider a startup warning in production.
   - **Names in emails:** whitespace is collapsed and HTML escaped, but zero-width and bidi characters are not stripped and the schemas may not cap name lengths.
+
+## Day 13: owner cancels a booking (tests and docs only)
+
+- **Did:** branch `feat/owner-cancel-booking`. The plan was a new owner-cancel endpoint, but reading the code showed `POST /bookings/{id}/cancel` already lets the owner of the booking's salon cancel: pending or confirmed only, a confirmed booking always gets `refund_due` true and the full deposit moves to `refund_pending` whatever `cancellation_hours` says, the client email says "The salon cancelled this booking" and that the deposit is being refunded, and the existing `cancellation_email_sent_at` / `owner_cancellation_email_sent_at` markers keep it to one set of emails. So no new endpoint, no migration, no dependency and no source change. Added `app/tests/test_owner_cancel.py` (15 tests) to pin it down: owner succeeds with a full refund inside the window, another salon's owner and a stranger client get 403 with nothing changed, pending vs confirmed, already-cancelled is a 200 with no change and no extra email, a double click and three parallel cancels send one set of emails and refund once, a crashing sender does not break the cancel, the owner's email has the client name and never the client email, and the owner confirmation, 24h/2h reminders and the 7:00 summary all skip a cancelled booking. `CLAUDE.md` now says owners can use the cancel route and what it does.
+- **Learned:** the feature was already built as part of the refund and email work; reading `CancelOutcome` and the cancel service first saved a duplicate endpoint.
+- **Stuck on:** nothing.
+- **Next:** review and push `feat/owner-cancel-booking`.
+- **Later:** the owner still gets a "You cancelled a booking" receipt when they cancel themselves; drop it if it turns out to be noise.
