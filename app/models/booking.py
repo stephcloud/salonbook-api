@@ -34,6 +34,12 @@ class Booking(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("ends_at > starts_at", name="ck_bookings_end_after_start"),
         Index("ix_bookings_stylist_id_starts_at", "stylist_id", "starts_at"),
+        # The reminder job only looks at confirmed bookings, by start time.
+        Index(
+            "ix_bookings_confirmed_starts_at",
+            "starts_at",
+            postgresql_where=text("status = 'confirmed'"),
+        ),
         # No two active (pending/confirmed) bookings for one stylist may overlap. [) ranges let
         # back-to-back bookings touch. Needs the btree_gist extension (migration 0006).
         ExcludeConstraint(
@@ -95,6 +101,14 @@ class Booking(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     owner_cancellation_email_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # Client reminders, same claim-then-release markers. A booking's reschedule (not built
+    # yet) must clear both, or the moved booking is never reminded.
+    reminder_24h_email_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    reminder_2h_email_sent_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     created_at: datetime = Field(

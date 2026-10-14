@@ -528,7 +528,7 @@ async def test_no_log_line_contains_an_email_address_or_the_api_key(
     await cancel(db_client, to_cancel)
 
     # Not a vacuous pass: the sends really failed and were logged.
-    assert any("not sent" in r.getMessage() for r in caplog.records)
+    assert any("rejected for good" in r.getMessage() for r in caplog.records)
     assert not EMAIL_ADDRESS.search(caplog.text), EMAIL_ADDRESS.findall(caplog.text)
     for secret in (paid.client.email, owner.email, "no-reply@salonbook.test", api_key):
         assert secret not in caplog.text

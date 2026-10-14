@@ -10,6 +10,18 @@ BREVO_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 DEFAULT_FROM_NAME = "SalonBook"
 
 
+# 4xx statuses that say something about our account, not about this message: a revoked key
+# (401), an exhausted quota (402), a blocked or unverified account (403), and "try again
+# later" (408, 429). They pass once the account is fixed, so they are temporary like a 5xx
+# and must not burn every due reminder.
+TEMPORARY_CLIENT_ERRORS = frozenset({401, 402, 403, 408, 429})
+
+
+def _is_permanent(status: int) -> bool:
+    """A 4xx means Brevo refused this message (bad address, sender, payload) for good."""
+    return 400 <= status < 500 and status not in TEMPORARY_CLIENT_ERRORS
+
+
 class BrevoSender:
     def __init__(
         self,
@@ -45,7 +57,10 @@ class BrevoSender:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             # The status code only: the body and the request can echo the address.
-            raise EmailSendError(f"brevo answered {exc.response.status_code}") from None
+            status = exc.response.status_code
+            raise EmailSendError(
+                f"brevo answered {status}", permanent=_is_permanent(status)
+            ) from None
         except httpx.HTTPError as exc:
             raise EmailSendError(
                 f"brevo request failed: {type(exc).__name__}"
