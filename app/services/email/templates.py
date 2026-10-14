@@ -17,7 +17,7 @@ outcomes, so these are the only ones the emails can state:
 
 import html
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -248,4 +248,99 @@ def owner_cancellation(ctx: BookingEmailContext) -> EmailMessage:
         intro=f"{who} a booking. The slot is free again.",
         details=[("Client", ctx.client_name), *_booking_details(ctx)[1:]],
         notes=notes,
+    )
+
+
+def _reminder(ctx: BookingEmailContext, *, when: str) -> EmailMessage:
+    return _render(
+        ctx,
+        to_address=ctx.client_email,
+        to_name=ctx.client_name,
+        subject=f"Reminder: your appointment at {ctx.salon_name} is {when}",
+        intro=f"This is a reminder that your appointment is {when}.",
+        details=[
+            *_booking_details(ctx),
+            ("Address", ctx.salon_address),
+            ("Phone", ctx.salon_phone),
+        ],
+        notes=[],
+    )
+
+
+def client_reminder_24h(ctx: BookingEmailContext) -> EmailMessage:
+    return _reminder(ctx, when="in about 24 hours")
+
+
+def client_reminder_2h(ctx: BookingEmailContext) -> EmailMessage:
+    return _reminder(ctx, when="in about 2 hours")
+
+
+@dataclass(frozen=True)
+class SummaryEntry:
+    starts_at: datetime
+    salon_name: str
+    service_name: str
+    stylist_name: str
+    client_name: str  # the name only: the owner's summary never carries a client email
+
+    def __post_init__(self) -> None:
+        for name in ("salon_name", "service_name", "stylist_name", "client_name"):
+            object.__setattr__(self, name, " ".join(getattr(self, name).split()))
+
+
+@dataclass(frozen=True)
+class OwnerSummaryContext:
+    owner_name: str
+    owner_email: str
+    day: date  # the Lagos day the summary is for
+    entries: tuple[SummaryEntry, ...]  # in start order
+    more: int = 0  # bookings beyond `entries`, not listed
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "owner_name", " ".join(self.owner_name.split()))
+
+
+def owner_daily_summary(ctx: OwnerSummaryContext) -> EmailMessage:
+    count = len(ctx.entries) + ctx.more
+    plural = "booking" if count == 1 else "bookings"
+    day = f"{ctx.day:%A} {ctx.day.day} {ctx.day:%b %Y}"
+    greeting = f"Hi {ctx.owner_name},"
+    intro = f"You have {count} confirmed {plural} still to come today, {day}."
+
+    def line(e: SummaryEntry) -> str:
+        time = e.starts_at.astimezone(LAGOS).strftime("%H:%M")
+        return (
+            f"{time} - {e.service_name} with {e.stylist_name} "
+            f"for {e.client_name} ({e.salon_name})"
+        )
+
+    text_lines = [greeting, "", intro, ""] + [line(e) for e in ctx.entries]
+    if ctx.more:
+        text_lines.append(f"...and {ctx.more} more.")
+    text_lines += ["", "SalonBook"]
+
+    cell = "padding:2px 12px 2px 0"
+    rows = "".join(
+        f'<tr><td style="{cell}"><strong>'
+        f"{e.starts_at.astimezone(LAGOS):%H:%M}</strong></td>"
+        f'<td style="{cell}">{html.escape(e.service_name)}</td>'
+        f'<td style="{cell}">{html.escape(e.stylist_name)}</td>'
+        f'<td style="{cell}">{html.escape(e.client_name)}</td>'
+        f'<td style="{cell};color:#555">{html.escape(e.salon_name)}</td></tr>'
+        for e in ctx.entries
+    )
+    more = f"<p>...and {ctx.more} more.</p>" if ctx.more else ""
+    html_body = (
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;'
+        'line-height:1.5;color:#222;max-width:640px">'
+        f"<p>{html.escape(greeting)}</p><p>{html.escape(intro)}</p>"
+        f'<table role="presentation" style="border-collapse:collapse">{rows}</table>'
+        f"{more}<p>SalonBook</p></div>"
+    )
+    return EmailMessage(
+        to_address=ctx.owner_email,
+        to_name=ctx.owner_name,
+        subject=f"Your bookings today: {count} on {ctx.day.day} {ctx.day:%b}",
+        text="\n".join(text_lines),
+        html=html_body,
     )

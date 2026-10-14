@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -33,7 +33,7 @@ from app.models.salon import Salon
 from app.models.service import Service
 from app.models.user import User
 from app.services.email import templates
-from app.services.email.base import EmailMessage, EmailSender
+from app.services.email.base import EmailMessage, EmailSender, EmailSendError
 from app.services.email.templates import BookingEmailContext
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,8 @@ class _Email:
     marker: str  # the Booking column that records it was sent
     for_cancelled: bool  # sent only while the booking is (not) cancelled
     build: Callable[[BookingEmailContext], EmailMessage]
+    # Reminders: sent only while the booking is confirmed and has not started.
+    confirmed_and_upcoming: bool = False
 
 
 CLIENT_CONFIRMATION = _Email(
@@ -230,22 +232,36 @@ async def _send_once(
     booking_id: uuid.UUID,
     email: _Email,
     ctx: BookingEmailContext,
-) -> None:
-    """Claim, send, and give the claim back if the send fails. Never raises."""
+    now: datetime | None = None,
+) -> bool:
+    """Claim, send, and give the claim back if the send fails. True if it was sent.
+
+    A temporary failure (timeout, 5xx, network) releases the claim so a later run can try
+    again. A permanent rejection (`EmailSendError.permanent`, an HTTP 4xx) keeps it, so a
+    bad address is not retried forever. Never raises.
+    """
     try:
         # Render first: a template bug must not eat the claim.
         message = email.build(ctx)
-        claimed_at = await _claim(session_maker, booking_id, email)
+        claimed_at = await _claim(session_maker, booking_id, email, now)
         if claimed_at is None:
             logger.info(
                 "booking email %s already sent or claimed; booking=%s",
                 email.kind,
                 booking_id,
             )
-            return
+            return False
         try:
             await sender.send(message)
         except BaseException as exc:  # undo the claim, even on shutdown
+            permanent = isinstance(exc, EmailSendError) and exc.permanent
+            if permanent:
+                logger.warning(
+                    "booking email %s rejected for good, not retried; booking=%s",
+                    email.kind,
+                    booking_id,
+                )
+                return False
             await _release(session_maker, booking_id, email, claimed_at)
             if not isinstance(exc, Exception):
                 raise  # cancellation (a redeploy) must still cancel
@@ -255,6 +271,8 @@ async def _send_once(
                 type(exc).__name__,
                 booking_id,
             )
+            return False
+        return True
     except Exception as exc:  # noqa: BLE001 - a notification must never raise
         logger.warning(
             "booking email %s failed: %s; booking=%s",
@@ -262,23 +280,31 @@ async def _send_once(
             type(exc).__name__,
             booking_id,
         )
+    return False
 
 
 async def _claim(
-    session_maker: SessionFactory, booking_id: uuid.UUID, email: _Email
+    session_maker: SessionFactory,
+    booking_id: uuid.UUID,
+    email: _Email,
+    now: datetime | None = None,
 ) -> datetime | None:
     """Stamp the marker if it is still NULL; the stamp for exactly one caller, else None.
 
     The booking's status is part of the same UPDATE, so a booking cancelled (or, for a
     cancellation, not yet cancelled) since the context was loaded is not emailed about.
+    A reminder also needs the booking to be confirmed and not yet started.
     """
     column = getattr(Booking, email.marker)
-    stamp = datetime.now(UTC)
-    status_ok = (
-        Booking.status == BookingStatus.CANCELLED
-        if email.for_cancelled
-        else Booking.status != BookingStatus.CANCELLED
-    )
+    stamp = now or datetime.now(UTC)
+    if email.confirmed_and_upcoming:
+        status_ok = and_(
+            Booking.status == BookingStatus.CONFIRMED, Booking.starts_at > stamp
+        )
+    elif email.for_cancelled:
+        status_ok = Booking.status == BookingStatus.CANCELLED
+    else:
+        status_ok = Booking.status != BookingStatus.CANCELLED
     async with session_maker() as session:
         claimed = (
             await session.execute(
