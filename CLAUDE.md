@@ -36,7 +36,7 @@ Pricing note: some salons only quote the final price after seeing the client's h
 - Payments: POST /payments/webhook (Paystack, verify signature)
 
 ## Environment variables (names only, never values)
-`DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `CORS_ORIGINS`, `PORT`, `PAYSTACK_SECRET_KEY`, `RESEND_API_KEY`
+`DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `CORS_ORIGINS`, `PORT`, `PAYSTACK_SECRET_KEY`, `RESEND_API_KEY`, `BREVO_API_KEY`, `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME`
 
 ## Deployment
 - Backend on Render (Docker runtime). The container's start command is the Dockerfile `CMD`: `alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Render's free tier has no Pre-Deploy Command, so migrations run on container start; leave Render's "Docker Command" setting empty so it doesn't override the `CMD`. A failed migration fails the deploy. If the service moves to a paid plan, switch to a Pre-Deploy Command of `alembic upgrade head` and drop it from the `CMD`.

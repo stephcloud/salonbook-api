@@ -11,6 +11,7 @@ import hmac
 import json
 import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
@@ -63,6 +64,17 @@ REFUND_EVENTS = frozenset({"refund.processed", "refund.failed"})
 SETTLED_STATUSES = frozenset(
     {PaymentStatus.PAID, PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED}
 )
+
+
+@dataclass(frozen=True)
+class WebhookOutcome:
+    """What a handled Paystack event leaves to do once it has committed."""
+
+    # Payments now waiting for a refund to be sent.
+    refund_ids: list[uuid.UUID] = field(default_factory=list)
+    # Bookings that THIS event moved pending -> confirmed. A replay leaves this empty,
+    # which is what keeps the confirmation emails to one.
+    confirmed_booking_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 def verify_signature(raw_body: bytes, signature: str | None, secret: str) -> bool:
@@ -230,8 +242,8 @@ async def handle_paystack_event(
     raw_body: bytes,
     signature: str | None,
     now: datetime | None = None,
-) -> list[uuid.UUID]:
-    """Apply a Paystack event; return the payments now waiting for a refund to be sent.
+) -> WebhookOutcome:
+    """Apply a Paystack event; say which refunds to send and which bookings it confirmed.
 
     401 if the signature is bad; otherwise returns normally. The signature is checked on
     the raw bytes before anything else, so a forged request reaches neither the parser
@@ -253,11 +265,13 @@ async def handle_paystack_event(
         ) from None
     kind = event.get("event") if isinstance(event, dict) else None
     if not isinstance(kind, str):
-        return []
+        return WebhookOutcome()
     if kind in REFUND_EVENTS:
-        return await _handle_refund_event(session, kind, event.get("data"), now)
+        return WebhookOutcome(
+            refund_ids=await _handle_refund_event(session, kind, event.get("data"), now)
+        )
     if kind != "charge.success":
-        return []
+        return WebhookOutcome()
     try:
         data = ChargeSuccessData.model_validate(event.get("data"))
     except ValidationError:
@@ -269,19 +283,18 @@ async def handle_paystack_event(
             "(reference=%r)",
             reference if isinstance(reference, str) else None,
         )
-        return []
+        return WebhookOutcome()
     try:
-        payment_id = await _apply_charge_success(session, data, now)
+        return await _apply_charge_success(session, data, now)
     except Exception:
         await session.rollback()  # release the row locks at once
         raise
-    return [payment_id] if payment_id is not None else []
 
 
 async def _apply_charge_success(
     session: AsyncSession, data: ChargeSuccessData, now: datetime
-) -> uuid.UUID | None:
-    """Apply a charge.success. Returns the payment id if it now needs a refund sent."""
+) -> WebhookOutcome:
+    """Apply a charge.success: a refund to send, or a booking this event confirmed."""
     ids = (
         await session.execute(
             select(Payment.id, Payment.booking_id).where(
@@ -292,7 +305,7 @@ async def _apply_charge_success(
     if ids is None:
         logger.warning("charge.success for unknown reference %s", data.reference)
         await session.rollback()
-        return None
+        return WebhookOutcome()
     payment_id, booking_id = ids
 
     # Lock booking, then payment. populate_existing: act on the current status, never a
@@ -314,9 +327,10 @@ async def _apply_charge_success(
         )
     ).scalar_one()
 
+    confirmed = False
     if payment.status in SETTLED_STATUSES:
         await session.rollback()  # replay: nothing to write, just release the locks
-        return None
+        return WebhookOutcome()
 
     if data.amount != payment.amount or data.currency.upper() != payment.currency:
         # Money arrived but not what we asked for. Never confirm on it: give it back.
@@ -336,11 +350,16 @@ async def _apply_charge_success(
         payment.paid_at = now
         booking.status = BookingStatus.CONFIRMED
         booking.updated_at = now
+        confirmed = True
     else:
         _settle_late_payment(booking, payment, now)
     needs_refund = payment.status == PaymentStatus.REFUND_PENDING
-    await session.commit()
-    return payment.id if needs_refund else None
+    outcome = WebhookOutcome(
+        refund_ids=[payment.id] if needs_refund else [],
+        confirmed_booking_ids=[booking.id] if confirmed else [],
+    )
+    await session.commit()  # ids were read above: commit expires nothing we return
+    return outcome
 
 
 def _settle_late_payment(booking: Booking, payment: Payment, now: datetime) -> None:
@@ -431,20 +450,23 @@ async def _handle_refund_event(
 
 async def cancel_booking_and_list_refunds(
     session: AsyncSession, booking_id: uuid.UUID, user: User
-) -> tuple[Booking, list[uuid.UUID]]:
+) -> tuple[booking_service.CancelOutcome, list[uuid.UUID]]:
     """Cancel a booking, then say which refunds the cancel queued.
 
     The cancel (and its refund decision) commits first and can fail on its own terms.
     Listing what to send is best effort: if it fails the cancel still stands, and the
     retry job sends the refund, so the client never gets a 500 for a cancel that worked.
     """
-    booking = await booking_service.cancel_booking(session, booking_id, user)
+    outcome = await booking_service.cancel_booking_with_outcome(
+        session, booking_id, user
+    )
+    booking_id = outcome.booking.id
     try:
-        queued = await refunds_waiting_for_booking(session, booking.id)
+        queued = await refunds_waiting_for_booking(session, booking_id)
     except Exception:
-        logger.exception("could not list queued refunds for booking %s", booking.id)
+        logger.exception("could not list queued refunds for booking %s", booking_id)
         queued = []
-    return booking, queued
+    return outcome, queued
 
 
 async def refunds_waiting_for_booking(

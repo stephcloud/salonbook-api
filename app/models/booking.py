@@ -83,7 +83,8 @@ class Booking(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     # One marker per booking per email. Set by an atomic claim just before sending and
-    # cleared again if the send fails, so each email goes out at most once. NULL = not sent.
+    # cleared again if the send fails (nothing retries it yet), so an email goes out at most
+    # once. NULL = not sent.
     confirmation_email_sent_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )

@@ -34,7 +34,6 @@ def ctx(**overrides: object) -> BookingEmailContext:
         "deposit_amount": 500000,
         "refund_due": None,
         "payment_status": None,
-        "was_confirmed": False,
         "cancelled_by_owner": False,
     }
     fields.update(overrides)
@@ -91,41 +90,33 @@ def test_names_are_html_escaped() -> None:
 @pytest.mark.parametrize(
     ("facts", "outcome"),
     [
-        # a pending booking paid nothing: never a money sentence
-        ({"was_confirmed": False, "refund_due": False}, RefundOutcome.NONE),
-        (
-            {"was_confirmed": False, "refund_due": True, "payment_status": "refunded"},
-            RefundOutcome.NONE,
-        ),
         # confirmed, refund_due true, refund queued or settled
         (
             {
-                "was_confirmed": True,
                 "refund_due": True,
                 "payment_status": "refund_pending",
             },
             RefundOutcome.REFUND_PENDING,
         ),
         (
-            {"was_confirmed": True, "refund_due": True, "payment_status": "refunded"},
+            {"refund_due": True, "payment_status": "refunded"},
             RefundOutcome.REFUNDED,
         ),
         # refund_due true but no payment to refund: do not claim a refund
-        ({"was_confirmed": True, "refund_due": True}, RefundOutcome.NONE),
+        ({"refund_due": True}, RefundOutcome.NONE),
         # refund_due true but the payment was never moved: do not claim a refund
         (
-            {"was_confirmed": True, "refund_due": True, "payment_status": "paid"},
+            {"refund_due": True, "payment_status": "paid"},
             RefundOutcome.NONE,
         ),
         # late client cancel: the salon keeps the paid deposit
         (
-            {"was_confirmed": True, "refund_due": False, "payment_status": "paid"},
+            {"refund_due": False, "payment_status": "paid"},
             RefundOutcome.KEPT,
         ),
         # an owner's cancel is always refund_due, so false + owner is not a known outcome
         (
             {
-                "was_confirmed": True,
                 "refund_due": False,
                 "payment_status": "paid",
                 "cancelled_by_owner": True,
@@ -134,7 +125,7 @@ def test_names_are_html_escaped() -> None:
         ),
         # no decision recorded
         (
-            {"was_confirmed": True, "refund_due": None, "payment_status": "paid"},
+            {"refund_due": None, "payment_status": "paid"},
             RefundOutcome.NONE,
         ),
     ],
@@ -151,7 +142,6 @@ def test_refund_outcome_only_states_what_the_cancel_flow_produced(
 def test_client_is_told_a_queued_refund_is_being_refunded() -> None:
     msg = templates.client_cancellation(
         ctx(
-            was_confirmed=True,
             refund_due=True,
             payment_status=PaymentStatus.REFUND_PENDING,
         )
@@ -164,7 +154,7 @@ def test_client_is_told_a_queued_refund_is_being_refunded() -> None:
 
 def test_client_is_told_a_settled_refund_has_been_refunded() -> None:
     msg = templates.client_cancellation(
-        ctx(was_confirmed=True, refund_due=True, payment_status=PaymentStatus.REFUNDED)
+        ctx(refund_due=True, payment_status=PaymentStatus.REFUNDED)
     )
 
     assert "Your deposit of ₦5,000 has been refunded" in msg.text
@@ -175,7 +165,6 @@ def test_client_is_told_a_late_cancel_keeps_the_deposit_with_the_salons_window()
 ):
     msg = templates.client_cancellation(
         ctx(
-            was_confirmed=True,
             refund_due=False,
             payment_status=PaymentStatus.PAID,
             cancellation_hours=48,
@@ -192,7 +181,6 @@ def test_owner_cancellation_says_the_salon_cancelled_and_the_deposit_goes_back()
 ):
     msg = templates.client_cancellation(
         ctx(
-            was_confirmed=True,
             refund_due=True,
             payment_status=PaymentStatus.REFUND_PENDING,
             cancelled_by_owner=True,
@@ -203,27 +191,18 @@ def test_owner_cancellation_says_the_salon_cancelled_and_the_deposit_goes_back()
     assert "is being refunded" in msg.text
 
 
-def test_a_cancelled_pending_booking_says_nothing_about_money() -> None:
-    msg = templates.client_cancellation(ctx(was_confirmed=False, refund_due=False))
-
-    assert "refund" not in msg.text.lower()
-    assert "deposit" not in msg.text.lower()
-
-
 def test_owner_cancellation_wording_follows_the_same_outcome() -> None:
     refunded = templates.owner_cancellation(
         ctx(
-            was_confirmed=True,
             refund_due=True,
             payment_status=PaymentStatus.REFUND_PENDING,
         )
     )
     kept = templates.owner_cancellation(
-        ctx(was_confirmed=True, refund_due=False, payment_status=PaymentStatus.PAID)
+        ctx(refund_due=False, payment_status=PaymentStatus.PAID)
     )
     by_owner = templates.owner_cancellation(
         ctx(
-            was_confirmed=True,
             refund_due=True,
             payment_status=PaymentStatus.REFUND_PENDING,
             cancelled_by_owner=True,
@@ -235,3 +214,17 @@ def test_owner_cancellation_wording_follows_the_same_outcome() -> None:
     assert "The deposit of ₦5,000 is being refunded to the client" in refunded.text
     assert "is kept" in kept.text
     assert "You cancelled a booking" in by_owner.text
+
+
+def test_newlines_in_user_text_cannot_add_lines_to_the_subject_or_body() -> None:
+    msg = templates.client_confirmation(
+        ctx(
+            salon_name="Glow\r\nBcc: x",
+            client_name="Chi\n\nPay now at evil.test",
+            service_name="Braids\n\n",
+        )
+    )
+
+    assert "\n" not in msg.subject and "\r" not in msg.subject
+    assert "Hi Chi Pay now at evil.test," in msg.text
+    assert "Salon: Glow Bcc: x\n" in msg.text
