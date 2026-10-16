@@ -5,7 +5,12 @@ Usage:
     SALONBOOK_BASE_URL=https://<host>/api/v1 python scripts/smoke_live.py
 
 It creates throwaway users/data on the target, so only point it at a test deployment.
-Nothing is read from .env and no secrets are needed: only the public API is used.
+Nothing is read from .env: only the public API is used.
+
+New salons start "pending" and cannot be booked until an admin approves them. To let this
+script approve its own throwaway salon, put the token of an admin account in the
+environment variable SALONBOOK_ADMIN_TOKEN (never as an argument). Without it the script
+stops after creating the salon and tells you to approve it by hand.
 
 State is read with GET /bookings/{id}, which returns the booking status, refund_due
 and the latest payment status and amount.
@@ -132,6 +137,25 @@ def main() -> int:
         "id",
     )
     salon_id = salon["id"]
+    report(
+        salon.get("status") == "pending",
+        "salon starts pending",
+        str(salon.get("status")),
+    )
+    admin_token = os.environ.get("SALONBOOK_ADMIN_TOKEN")
+    if not admin_token:
+        info(
+            f"Salon {salon_id} is pending. Approve it as an admin "
+            f"(POST /admin/salons/{salon_id}/approve), or set SALONBOOK_ADMIN_TOKEN "
+            "so this script can, then run it again."
+        )
+        return 1
+    expect(
+        http.post(f"/admin/salons/{salon_id}/approve", headers=auth(admin_token)),
+        "admin: approve salon",
+        200,
+        "status",
+    )
     report(
         salon["deposit_amount"] == DEPOSIT_KOBO,
         "salon deposit_amount",
