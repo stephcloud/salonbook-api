@@ -4,23 +4,26 @@ The normal suite builds its schema from the models, so it never runs a migration
 test creates its own scratch database on the test server, migrates it to 0012, adds a
 salon the way production has one, upgrades to head, and checks what happened to it.
 It never touches any other database.
+
+Alembic runs in a subprocess: its env.py calls logging.config.fileConfig, which would
+reconfigure logging inside the pytest process and silence the log assertions of every
+test that runs after this one.
 """
 
 import asyncio
+import os
+import subprocess
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-import pytest
 import pytest_asyncio
-from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from alembic import command
-from app.core.config import settings
 from app.tests.conftest import _test_database_url
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,11 +32,18 @@ OWNER_ID = "11111111-1111-1111-1111-111111111111"
 OLD_SALON_ID = "22222222-2222-2222-2222-222222222222"
 
 
-def _alembic(url: str, monkeypatch: pytest.MonkeyPatch, target: str) -> None:
-    monkeypatch.setattr(settings, "DATABASE_URL", url)
-    cfg = Config(str(ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(ROOT / "alembic"))
-    command.upgrade(cfg, target)
+def _alembic(url: str, target: str) -> None:
+    """`alembic upgrade <target>` against `url` only: the URL is passed to this one process."""
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", target],
+        cwd=ROOT,
+        env={**os.environ, "DATABASE_URL": url},
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
 
 
 @pytest_asyncio.fixture
@@ -58,9 +68,9 @@ async def scratch_url() -> AsyncIterator[str]:
 
 
 async def test_existing_salons_stay_approved_and_new_ones_start_pending(
-    scratch_url: str, monkeypatch: pytest.MonkeyPatch
+    scratch_url: str,
 ) -> None:
-    await asyncio.to_thread(_alembic, scratch_url, monkeypatch, "0012")
+    await asyncio.to_thread(_alembic, scratch_url, "0012")
     engine = create_async_engine(scratch_url, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.execute(
@@ -78,7 +88,7 @@ async def test_existing_salons_stay_approved_and_new_ones_start_pending(
             {"id": OLD_SALON_ID, "owner": OWNER_ID},
         )
 
-    await asyncio.to_thread(_alembic, scratch_url, monkeypatch, "head")
+    await asyncio.to_thread(_alembic, scratch_url, "head")
 
     async with engine.begin() as conn:
         old = await conn.scalar(
