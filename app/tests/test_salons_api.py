@@ -5,7 +5,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, hash_password
-from app.models.salon import Salon
+from app.models.salon import Salon, SalonStatus
 from app.models.user import User, UserRole
 
 SALONS = "/api/v1/salons"
@@ -35,7 +35,8 @@ async def make_user(
 async def make_salon(
     db_session: AsyncSession, owner: User, **overrides: object
 ) -> Salon:
-    fields: dict[str, object] = {**SALON, **overrides}
+    # Approved by default, so tests that are not about moderation see a normal salon.
+    fields: dict[str, object] = {**SALON, "status": SalonStatus.APPROVED, **overrides}
     salon = Salon(owner_id=owner.id, **fields)
     db_session.add(salon)
     await db_session.commit()
@@ -122,7 +123,13 @@ async def test_list_salons_default_limit_is_20(
 ) -> None:
     owner, _ = await make_user(db_session)
     for i in range(25):
-        db_session.add(Salon(owner_id=owner.id, **{**SALON, "name": f"S{i}"}))
+        db_session.add(
+            Salon(
+                owner_id=owner.id,
+                status=SalonStatus.APPROVED,
+                **{**SALON, "name": f"S{i}"},
+            )
+        )
     await db_session.commit()
     resp = await db_client.get(SALONS)
     assert resp.status_code == 200
@@ -134,7 +141,13 @@ async def test_list_salons_limit_and_offset(
 ) -> None:
     owner, _ = await make_user(db_session)
     for i in range(5):
-        db_session.add(Salon(owner_id=owner.id, **{**SALON, "name": f"S{i}"}))
+        db_session.add(
+            Salon(
+                owner_id=owner.id,
+                status=SalonStatus.APPROVED,
+                **{**SALON, "name": f"S{i}"},
+            )
+        )
     await db_session.commit()
     first = (await db_client.get(SALONS, params={"limit": 2})).json()
     rest = (await db_client.get(SALONS, params={"limit": 2, "offset": 2})).json()

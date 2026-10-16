@@ -8,7 +8,12 @@ from app.api.deps import PaginationDep, SessionDep, require_role
 from app.models.booking import BookingStatus
 from app.models.user import User, UserRole
 from app.schemas.booking import OwnerBookingItem
-from app.schemas.salon import SalonCreate, SalonResponse, SalonUpdate
+from app.schemas.salon import (
+    OwnerSalonResponse,
+    SalonCreate,
+    SalonResponse,
+    SalonUpdate,
+)
 from app.schemas.service import ServiceCreate, ServiceResponse
 from app.services import bookings as booking_service
 from app.services import salons as salon_service
@@ -19,12 +24,12 @@ router = APIRouter(prefix="/salons", tags=["salons"])
 Owner = Annotated[User, Depends(require_role(UserRole.OWNER))]
 
 
-@router.post("", response_model=SalonResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=OwnerSalonResponse, status_code=status.HTTP_201_CREATED)
 async def create_salon(
     data: SalonCreate, session: SessionDep, owner: Owner
-) -> SalonResponse:
+) -> OwnerSalonResponse:
     salon = await salon_service.create_salon(session, owner, data)
-    return SalonResponse.model_validate(salon)
+    return OwnerSalonResponse.model_validate(salon)
 
 
 # Public: salon listings are read-only discovery data.
@@ -36,29 +41,29 @@ async def list_salons(session: SessionDep, page: PaginationDep) -> list[SalonRes
 
 # The signed-in owner's own salons. Declared before "/{salon_id}" so "mine" is not
 # parsed as an id.
-@router.get("/mine", response_model=list[SalonResponse])
+@router.get("/mine", response_model=list[OwnerSalonResponse])
 async def list_my_salons(
     session: SessionDep, owner: Owner, page: PaginationDep
-) -> list[SalonResponse]:
+) -> list[OwnerSalonResponse]:
     salons = await salon_service.list_owned_salons(
         session, owner, page.limit, page.offset
     )
-    return [SalonResponse.model_validate(s) for s in salons]
+    return [OwnerSalonResponse.model_validate(s) for s in salons]
 
 
-# Public.
+# Public: approved salons only; pending and suspended ones are a plain 404.
 @router.get("/{salon_id}", response_model=SalonResponse)
 async def get_salon(salon_id: uuid.UUID, session: SessionDep) -> SalonResponse:
-    salon = await salon_service.get_salon(session, salon_id)
+    salon = await salon_service.get_public_salon(session, salon_id)
     return SalonResponse.model_validate(salon)
 
 
-@router.patch("/{salon_id}", response_model=SalonResponse)
+@router.patch("/{salon_id}", response_model=OwnerSalonResponse)
 async def update_salon(
     salon_id: uuid.UUID, data: SalonUpdate, session: SessionDep, owner: Owner
-) -> SalonResponse:
+) -> OwnerSalonResponse:
     salon = await salon_service.update_salon(session, salon_id, owner, data)
-    return SalonResponse.model_validate(salon)
+    return OwnerSalonResponse.model_validate(salon)
 
 
 @router.post(

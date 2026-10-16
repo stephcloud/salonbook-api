@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import settings
 from app.models.booking import Booking, BookingStatus
 from app.models.payment import Payment, PaymentStatus
-from app.models.salon import Salon
+from app.models.salon import Salon, SalonStatus
 from app.models.user import User
 from app.schemas.payment import ChargeSuccessData, RefundEventData
 from app.services import bookings as booking_service
@@ -35,6 +35,7 @@ from app.services.paystack import (
     PaystackError,
     RefundResult,
 )
+from app.services.salons import not_accepting_bookings
 from app.services.slots import not_found
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,11 @@ async def _reserve_payment(
         raise _forbidden()
     if booking.status != BookingStatus.PENDING or _is_lapsed(booking, now):
         raise _conflict("This booking can no longer be paid for.")
+    # Before any checkout is handed out or opened with Paystack. Existing payments and
+    # the webhook are untouched: money already taken must still confirm or refund.
+    salon = await _salon_for(session, booking)
+    if salon is None or salon.status != SalonStatus.APPROVED:
+        raise not_accepting_bookings()
 
     existing = (
         await session.execute(
@@ -205,12 +211,16 @@ async def _reserve_payment(
     return payment, True
 
 
-async def _deposit_for(session: AsyncSession, booking: Booking) -> int:
-    """The salon's deposit in kobo, always read from the database."""
+async def _salon_for(session: AsyncSession, booking: Booking) -> Salon | None:
     stylist = await session.get(User, booking.stylist_id)
     if stylist is None or stylist.salon_id is None:
-        return 0
-    salon = await session.get(Salon, stylist.salon_id)
+        return None
+    return await session.get(Salon, stylist.salon_id)
+
+
+async def _deposit_for(session: AsyncSession, booking: Booking) -> int:
+    """The salon's deposit in kobo, always read from the database."""
+    salon = await _salon_for(session, booking)
     return salon.deposit_amount if salon is not None else 0
 
 
