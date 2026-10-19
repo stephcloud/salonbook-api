@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.service import Service
 from app.models.user import User
 from app.schemas.service import ServiceCreate, ServiceUpdate, check_price_matches_type
-from app.services.salons import get_owned_salon, get_salon
+from app.services.salons import get_owned_salon, get_public_salon
 
 FOREIGN_KEY_VIOLATION = "23503"
 
@@ -27,7 +27,7 @@ async def create_service(
 async def list_services(
     session: AsyncSession, salon_id: uuid.UUID, limit: int, offset: int
 ) -> list[Service]:
-    await get_salon(session, salon_id)
+    await get_public_salon(session, salon_id)
     result = await session.execute(
         select(Service)
         .where(Service.salon_id == salon_id)

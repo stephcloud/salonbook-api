@@ -52,8 +52,21 @@ All money values are integers in **kobo** (divide by 100 for naira). Times are s
 | slots | `GET /stylists/{id}/slots` (any signed-in user; 401 without a token) |
 | bookings | `POST /bookings`, `GET /bookings`, `GET /bookings/{id}`, `POST /bookings/{id}/pay`, `POST /bookings/{id}/cancel` |
 | payments | `POST /payments/webhook` (public, authenticated by signature) |
+| admin | `GET /admin/salons`, `POST /admin/salons/{id}/approve`, `POST /admin/salons/{id}/suspend`, `DELETE /admin/salons/{id}`, `GET /admin/users`, `DELETE /admin/users/{id}` (admin role only: 401 without a token, 403 for everyone else) |
 
 `GET /bookings` and `GET /bookings/{id}` also return nested `salon` (id, name, address, phone, cancellation_hours, deposit_amount, image_url), `service` (id, name, duration_minutes, price_type, price) and `stylist` (id, name, image_url) summaries, loaded in one joined query. No emails or Paystack fields are included.
+
+New salons start `pending` and are hidden (404) from the public list and detail, and slots, booking and payment are refused (409), until an admin approves them. Owners see their salon's `status` in `GET /salons/mine`.
+
+### Making the first admin
+
+There is no API route that creates an admin. Register your own account, then run this yourself, pointing `DATABASE_URL` at the database you mean to change for that one command:
+
+```bash
+python -m app.jobs.make_admin you@example.com
+```
+
+It refuses (exit code 1) if there is no such account, or if the account owns a salon, is a stylist or has bookings.
 
 See `/docs` for exact request and response schemas.
 
@@ -105,6 +118,8 @@ Lint and format: `ruff check .` and `ruff format --check .` (do not auto-fix `ap
 ```bash
 python scripts/smoke_live.py --base-url https://salonbook-api-etyz.onrender.com/api/v1
 ```
+
+New salons start `pending`, so the script needs an admin to approve its throwaway salon: put an admin's token in the `SALONBOOK_ADMIN_TOKEN` environment variable. Without it the script stops after creating the salon and tells you to approve it by hand.
 
 ## Deployment
 

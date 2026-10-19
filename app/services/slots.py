@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.availability_rule import AvailabilityRule, RuleKind
 from app.models.booking import ACTIVE_STATUSES, Booking
-from app.models.salon import Salon
+from app.models.salon import Salon, SalonStatus
 from app.models.service import Service
 from app.models.stylist_service import StylistService
 from app.models.user import User, UserRole
+from app.services.salons import not_accepting_bookings
 
 # Candidate start times are offered on this grid, whatever the service length.
 SLOT_STEP_MINUTES = 15
@@ -77,8 +78,13 @@ async def load_stylist_and_service(
     stylist = await session.get(User, stylist_id)
     if stylist is None or stylist.role != UserRole.STYLIST or stylist.salon_id is None:
         raise not_found()
-    if await session.get(Salon, stylist.salon_id) is None:
+    salon = await session.get(Salon, stylist.salon_id)
+    if salon is None:
         raise not_found()
+    # Slots and new bookings share this loader, so one check covers both. A clear error,
+    # not a 404: the client already holds the stylist and service ids.
+    if salon.status != SalonStatus.APPROVED:
+        raise not_accepting_bookings()
     # Only services the stylist offers (so the duration is the one being booked).
     service = (
         await session.execute(

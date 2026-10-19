@@ -344,3 +344,66 @@ def owner_daily_summary(ctx: OwnerSummaryContext) -> EmailMessage:
         text="\n".join(text_lines),
         html=html_body,
     )
+
+
+@dataclass(frozen=True)
+class SalonStatusEmailContext:
+    owner_name: str
+    owner_email: str
+    salon_name: str
+
+    def __post_init__(self) -> None:
+        # Free text typed by users: no newlines in a subject or body.
+        for name in ("owner_name", "salon_name"):
+            object.__setattr__(self, name, " ".join(getattr(self, name).split()))
+
+
+def _salon_status_email(
+    ctx: SalonStatusEmailContext, *, subject: str, notes: list[str]
+) -> EmailMessage:
+    greeting = f"Hi {ctx.owner_name},"
+    text = "\n".join([greeting, "", *notes, "", "SalonBook"])
+    paragraphs = "".join(f"<p>{html.escape(n)}</p>" for n in notes)
+    html_body = (
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;'
+        'line-height:1.5;color:#222;max-width:520px">'
+        f"<p>{html.escape(greeting)}</p>{paragraphs}<p>SalonBook</p></div>"
+    )
+    return EmailMessage(
+        to_address=ctx.owner_email,
+        to_name=ctx.owner_name,
+        subject=subject,
+        text=text,
+        html=html_body,
+    )
+
+
+def owner_salon_approved(ctx: SalonStatusEmailContext) -> EmailMessage:
+    return _salon_status_email(
+        ctx,
+        subject=f"{ctx.salon_name} is approved",
+        notes=[
+            (
+                f"Good news: {ctx.salon_name} has been approved. It now appears on "
+                "SalonBook and clients can book it."
+            )
+        ],
+    )
+
+
+def owner_salon_suspended(ctx: SalonStatusEmailContext) -> EmailMessage:
+    # The admin's reason stays in the audit log; it is never put in an email.
+    return _salon_status_email(
+        ctx,
+        subject=f"{ctx.salon_name} has been suspended",
+        notes=[
+            (
+                f"{ctx.salon_name} has been suspended. It no longer appears on "
+                "SalonBook and clients cannot make new bookings."
+            ),
+            (
+                "Bookings that already exist are not affected. Please contact "
+                "SalonBook support if you have questions."
+            ),
+        ],
+    )

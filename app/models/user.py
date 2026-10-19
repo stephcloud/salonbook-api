@@ -19,6 +19,8 @@ class UserRole(StrEnum):
     OWNER = "owner"
     STYLIST = "stylist"
     CLIENT = "client"
+    # The platform owner. Never creatable through the API: only the make_admin job grants it.
+    ADMIN = "admin"
 
 
 class User(SQLModel, table=True):

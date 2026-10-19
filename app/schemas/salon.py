@@ -4,6 +4,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app.models.salon import SalonStatus
 from app.schemas.image import ImageUrl
 
 Name = Annotated[
@@ -44,6 +45,8 @@ class SalonUpdate(BaseModel):
 
 
 class SalonResponse(BaseModel):
+    """The public shape: no moderation status."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -55,3 +58,9 @@ class SalonResponse(BaseModel):
     cancellation_hours: int
     deposit_amount: int
     created_at: datetime
+
+
+class OwnerSalonResponse(SalonResponse):
+    """What an owner sees of their own salon: the public fields plus its status."""
+
+    status: SalonStatus

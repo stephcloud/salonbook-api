@@ -5,7 +5,16 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import auth, bookings, internal, payments, salons, services, stylists
+from app.api.v1 import (
+    admin,
+    auth,
+    bookings,
+    internal,
+    payments,
+    salons,
+    services,
+    stylists,
+)
 from app.core.config import settings
 from app.db.session import engine
 from app.jobs import expire_pending, retry_refunds
@@ -41,6 +50,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+app.include_router(admin.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(bookings.router, prefix="/api/v1")
 app.include_router(internal.router, prefix="/api/v1")
