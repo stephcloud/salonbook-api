@@ -212,3 +212,8 @@ Other deferred ideas live in each entry's **Later** list (Day 7, Day 8 Stage A a
   - **Stylist insert racing a salon delete** is reported as "email already registered" (any `IntegrityError` there is).
   - **make_admin writes no audit row** (there is no acting admin); its log line is the record.
   - **Reschedule is not built;** when it is, it needs the same non-approved check.
+  - **No concurrency tests for the admin locking:** nothing tests two concurrent approve/suspend calls (only one should flip, with one audit row and one email), or a salon or user delete racing a booking or stylist insert (the `IntegrityError` branches in `services/admin.py`). Add one `asyncio.gather` test each with two sessions, like `test_hard_part_double_booking`.
+  - **Admin routes are listed in the public `/docs` and `/openapi.json`:** kept on purpose (you chose to show them), but anyone can see the `/admin` paths. `include_in_schema=False` on the admin router, or turning docs off in production, would hide them.
+  - **Slots and booking leak a non-approved salon's existence:** a signed-in user gets 409 "salon is not accepting bookings" for a stylist in a pending or suspended salon, but 404 for an unknown one, so a guessed stylist id can be confirmed. Low risk with UUIDs; accepted for now.
+  - **`owner_id` is in the public salon response** (there before this branch). Consider dropping it from the public shape.
+  - **Admin deletes are permanent:** salon and user deletes are hard deletes with no undo, and the audit row keeps ids only, so a deleted salon's name or a deleted user's email can't be recovered. Bookings and payments are safe (RESTRICT foreign keys, plus the 409 checks).
