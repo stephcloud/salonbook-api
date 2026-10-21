@@ -3,7 +3,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -20,22 +20,41 @@ SessionMakerDep = Annotated[
 ]
 
 
+async def _user_from_credentials(
+    session: AsyncSession, credentials: HTTPAuthorizationCredentials | None
+) -> User | None:
+    """The user a bearer token belongs to, or None for no token or any bad token."""
+    if credentials is None:
+        return None
+    user_id: uuid.UUID | None = decode_access_token(credentials.credentials)
+    if user_id is None:
+        return None
+    return await session.get(User, user_id)
+
+
 async def get_current_user(
     session: SessionDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> User:
-    if credentials is None:
-        raise invalid_credentials()
-    user_id: uuid.UUID | None = decode_access_token(credentials.credentials)
-    if user_id is None:
-        raise invalid_credentials()
-    user = await session.get(User, user_id)
+    user = await _user_from_credentials(session, credentials)
     if user is None:
         raise invalid_credentials()
     return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def get_optional_user(request: Request, session: SessionDep) -> User | None:
+    """The signed-in user, or None for no token or any bad token (never a 401).
+
+    The bearer scheme is called directly, not through Depends, so routes using this
+    keep the same OpenAPI schema as a public route.
+    """
+    return await _user_from_credentials(session, await bearer_scheme(request))
+
+
+OptionalUser = Annotated[User | None, Depends(get_optional_user)]
 
 
 def require_role(*roles: UserRole) -> Callable[..., Coroutine[Any, Any, User]]:

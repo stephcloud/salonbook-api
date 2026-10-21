@@ -75,6 +75,21 @@ async def get_public_salon(session: AsyncSession, salon_id: uuid.UUID) -> Salon:
     return salon
 
 
+async def get_visible_salon(
+    session: AsyncSession, salon_id: uuid.UUID, viewer: User | None
+) -> Salon:
+    """A public read that the salon's own owner may make whatever the status.
+
+    Everyone else, signed in or not, gets the same 404 as `get_public_salon`.
+    """
+    salon = await get_salon(session, salon_id)
+    if salon.status != SalonStatus.APPROVED and (
+        viewer is None or viewer.id != salon.owner_id
+    ):
+        raise _not_found()
+    return salon
+
+
 async def get_owned_salon(
     session: AsyncSession, salon_id: uuid.UUID, user: User
 ) -> Salon:

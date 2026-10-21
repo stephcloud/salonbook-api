@@ -12,7 +12,7 @@ from app.models.stylist_service import StylistService
 from app.models.user import User, UserRole
 from app.schemas.stylist import PublicStylistResponse, StylistCreate
 from app.services.auth import email_taken, get_user_by_email
-from app.services.salons import get_owned_salon, get_public_salon
+from app.services.salons import get_owned_salon, get_visible_salon
 
 
 async def create_stylist(
@@ -41,9 +41,13 @@ async def create_stylist(
 
 
 async def list_salon_stylists(
-    session: AsyncSession, salon_id: uuid.UUID, limit: int, offset: int
+    session: AsyncSession,
+    salon_id: uuid.UUID,
+    viewer: User | None,
+    limit: int,
+    offset: int,
 ) -> list[PublicStylistResponse]:
-    await get_public_salon(session, salon_id)
+    await get_visible_salon(session, salon_id, viewer)
     result = await session.execute(
         select(User)
         .where(User.salon_id == salon_id, User.role == UserRole.STYLIST)

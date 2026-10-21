@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import (
     CurrentUser,
+    OptionalUser,
     PaginationDep,
     SessionDep,
     get_current_user,
@@ -47,13 +48,14 @@ async def create_stylist(
     return StylistResponse.model_validate(stylist)
 
 
-# Public: only id, name and service ids (no personal data).
+# Public: only id, name, image and service ids (no personal data). Approved salons
+# only, except that the salon's own owner can read it whatever the status.
 @router.get("/salons/{salon_id}/stylists", response_model=list[PublicStylistResponse])
 async def list_stylists(
-    salon_id: uuid.UUID, session: SessionDep, page: PaginationDep
+    salon_id: uuid.UUID, session: SessionDep, viewer: OptionalUser, page: PaginationDep
 ) -> list[PublicStylistResponse]:
     return await stylist_service.list_salon_stylists(
-        session, salon_id, page.limit, page.offset
+        session, salon_id, viewer, page.limit, page.offset
     )
 
 
