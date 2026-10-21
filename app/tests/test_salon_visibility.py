@@ -1,14 +1,22 @@
 """Only approved salons are public, bookable and payable. Owners always see their own."""
 
+import uuid
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
+
+import jwt
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.security import JWT_ALGORITHM, create_access_token
 from app.models.booking import Booking, BookingStatus
 from app.models.payment import PaymentStatus
 from app.models.salon import Salon, SalonStatus
+from app.models.stylist_service import StylistService
+from app.models.user import UserRole
 from app.tests.email_fakes import FakeEmailSender
 from app.tests.payment_helpers import make_scenario
 from app.tests.paystack_fakes import FakePaystack
@@ -22,7 +30,9 @@ from app.tests.test_bookings_api import (
     open_stylist,
 )
 from app.tests.test_salons_api import SALON, SALONS, make_salon, make_user
+from app.tests.test_services_api import make_service
 from app.tests.test_slots import upcoming
+from app.tests.test_stylists_api import make_stylist
 
 NOT_ACCEPTING = "salon is not accepting bookings"
 HIDDEN = [SalonStatus.PENDING, SalonStatus.SUSPENDED]
@@ -130,6 +140,177 @@ async def test_the_owner_can_still_edit_and_set_up_a_hidden_salon(
         f"{SALONS}/{salon.id}/bookings", headers=headers
     )
     assert owner_bookings.status_code == 200
+
+
+SETUP_READS = ("/services", "/stylists")
+
+
+async def salon_with_setup(
+    db_session: AsyncSession, salon_status: SalonStatus
+) -> tuple[Salon, dict[str, str]]:
+    """A salon with one service and one stylist offering it, and its owner's headers."""
+    owner, headers = await make_user(db_session)
+    salon = await make_salon(db_session, owner, status=salon_status)
+    service = await make_service(db_session, salon)
+    stylist = await make_stylist(db_session, salon)
+    db_session.add(StylistService(stylist_id=stylist.id, service_id=service.id))
+    await db_session.commit()
+    return salon, headers
+
+
+@pytest.mark.parametrize("hidden", HIDDEN)
+@pytest.mark.parametrize("suffix", SETUP_READS)
+async def test_the_owner_can_read_a_hidden_salons_services_and_stylists(
+    db_client: AsyncClient, db_session: AsyncSession, hidden: SalonStatus, suffix: str
+) -> None:
+    salon, headers = await salon_with_setup(db_session, hidden)
+    resp = await db_client.get(f"{SALONS}/{salon.id}{suffix}", headers=headers)
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+# Each outsider gets the hidden salon, so the salon's own stylist can be one of them.
+Outsider = Callable[[AsyncSession, Salon], Awaitable[dict[str, str]]]
+
+
+async def _other_owner(db_session: AsyncSession, _: Salon) -> dict[str, str]:
+    other, headers = await make_user(db_session)
+    await make_salon(db_session, other, name="Other")
+    return headers
+
+
+async def _client(db_session: AsyncSession, _: Salon) -> dict[str, str]:
+    return (await make_user(db_session, UserRole.CLIENT))[1]
+
+
+async def _admin(db_session: AsyncSession, _: Salon) -> dict[str, str]:
+    return (await make_user(db_session, UserRole.ADMIN))[1]
+
+
+async def _the_salons_stylist(db_session: AsyncSession, salon: Salon) -> dict[str, str]:
+    stylist = await make_stylist(db_session, salon)
+    return {"Authorization": f"Bearer {create_access_token(stylist.id)}"}
+
+
+async def _anonymous(_: AsyncSession, __: Salon) -> dict[str, str]:
+    return {}
+
+
+async def _garbage_token(_: AsyncSession, __: Salon) -> dict[str, str]:
+    return {"Authorization": "Bearer not-a-jwt"}
+
+
+async def _basic_scheme(_: AsyncSession, __: Salon) -> dict[str, str]:
+    return {"Authorization": "Basic dXNlcjpwYXNz"}
+
+
+async def _unknown_user_token(_: AsyncSession, __: Salon) -> dict[str, str]:
+    return {"Authorization": f"Bearer {create_access_token(uuid.uuid4())}"}
+
+
+async def _owners_expired_token(_: AsyncSession, salon: Salon) -> dict[str, str]:
+    # The right owner, but the token has lapsed: treated as anonymous, not a 401.
+    past = datetime.now(UTC) - timedelta(hours=2)
+    token = jwt.encode(
+        {"sub": str(salon.owner_id), "iat": past, "exp": past + timedelta(hours=1)},
+        settings.SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+OUTSIDERS: list[Outsider] = [
+    _other_owner,
+    _client,
+    _admin,
+    _the_salons_stylist,
+    _anonymous,
+    _garbage_token,
+    _basic_scheme,
+    _unknown_user_token,
+    _owners_expired_token,
+]
+
+
+def _name(f: Outsider) -> str:
+    return f.__name__.strip("_")
+
+
+@pytest.mark.parametrize("hidden", HIDDEN)
+@pytest.mark.parametrize("suffix", SETUP_READS)
+@pytest.mark.parametrize("outsider", OUTSIDERS, ids=_name)
+async def test_anyone_but_the_owner_gets_404_for_a_hidden_salon(
+    db_client: AsyncClient,
+    db_session: AsyncSession,
+    hidden: SalonStatus,
+    suffix: str,
+    outsider: Outsider,
+) -> None:
+    salon, _ = await salon_with_setup(db_session, hidden)
+    headers = await outsider(db_session, salon)
+    resp = await db_client.get(f"{SALONS}/{salon.id}{suffix}", headers=headers)
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "salon not found"}
+
+
+@pytest.mark.parametrize("suffix", SETUP_READS)
+@pytest.mark.parametrize("viewer", [_anonymous, _client, _garbage_token], ids=_name)
+async def test_an_approved_salons_services_and_stylists_stay_public(
+    db_client: AsyncClient,
+    db_session: AsyncSession,
+    suffix: str,
+    viewer: Outsider,
+) -> None:
+    salon, owner_headers = await salon_with_setup(db_session, SalonStatus.APPROVED)
+    for headers in (await viewer(db_session, salon), owner_headers):
+        resp = await db_client.get(f"{SALONS}/{salon.id}{suffix}", headers=headers)
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+
+async def test_an_unknown_salon_is_still_404_for_a_signed_in_owner(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _, headers = await make_user(db_session)
+    for suffix in SETUP_READS:
+        resp = await db_client.get(f"{SALONS}/{uuid.uuid4()}{suffix}", headers=headers)
+        assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path", ["/salons/{salon_id}/services", "/salons/{salon_id}/stylists"]
+)
+async def test_the_owner_reads_add_nothing_to_the_openapi_schema(
+    client: AsyncClient, path: str
+) -> None:
+    operation = (await client.get("/openapi.json")).json()["paths"][f"/api/v1{path}"][
+        "get"
+    ]
+    assert "security" not in operation
+    assert sorted(p["name"] for p in operation["parameters"]) == [
+        "limit",
+        "offset",
+        "salon_id",
+    ]
+
+
+async def test_the_owners_view_of_a_setup_read_is_never_shared_cacheable(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The owner gets 200 where everyone else gets 404 for the same URL. Today nothing
+    # sets cache headers; if anything ever does, a signed-in response must stay
+    # private and no response may carry a validator a shared cache could reuse.
+    salon, headers = await salon_with_setup(db_session, SalonStatus.PENDING)
+    for suffix in SETUP_READS:
+        for h in (headers, {}):
+            resp = await db_client.get(f"{SALONS}/{salon.id}{suffix}", headers=h)
+            for name in ("etag", "last-modified", "expires"):
+                assert name not in resp.headers, (suffix, name)
+            cache_control = resp.headers.get("cache-control")
+            if h and cache_control is not None:
+                assert "private" in cache_control and "no-store" in cache_control
+            if cache_control is not None:
+                assert "public" not in cache_control and "s-maxage" not in cache_control
 
 
 # --- slots, booking and payment are refused ---

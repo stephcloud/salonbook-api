@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import PaginationDep, SessionDep, require_role
+from app.api.deps import OptionalUser, PaginationDep, SessionDep, require_role
 from app.models.booking import BookingStatus
 from app.models.user import User, UserRole
 from app.schemas.booking import OwnerBookingItem
@@ -78,13 +78,13 @@ async def create_service(
     return ServiceResponse.model_validate(service)
 
 
-# Public.
+# Public for approved salons; the salon's own owner can read it whatever the status.
 @router.get("/{salon_id}/services", response_model=list[ServiceResponse])
 async def list_services(
-    salon_id: uuid.UUID, session: SessionDep, page: PaginationDep
+    salon_id: uuid.UUID, session: SessionDep, viewer: OptionalUser, page: PaginationDep
 ) -> list[ServiceResponse]:
     services = await service_service.list_services(
-        session, salon_id, page.limit, page.offset
+        session, salon_id, viewer, page.limit, page.offset
     )
     return [ServiceResponse.model_validate(s) for s in services]
 
