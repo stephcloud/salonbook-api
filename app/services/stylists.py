@@ -10,9 +10,10 @@ from app.core.security import hash_password
 from app.models.service import Service
 from app.models.stylist_service import StylistService
 from app.models.user import User, UserRole
-from app.schemas.stylist import PublicStylistResponse, StylistCreate
+from app.schemas.stylist import PublicStylistResponse, StylistCreate, StylistUpdate
 from app.services.auth import email_taken, get_user_by_email
 from app.services.salons import get_owned_salon, get_visible_salon
+from app.services.services import FOREIGN_KEY_VIOLATION
 
 
 async def create_stylist(
@@ -77,15 +78,64 @@ async def list_salon_stylists(
 
 
 async def _get_owned_stylist(
-    session: AsyncSession, stylist_id: uuid.UUID, owner: User
+    session: AsyncSession, stylist_id: uuid.UUID, owner: User, lock: bool = False
 ) -> User:
-    stylist = await session.get(User, stylist_id)
+    """With `lock`, the row is read fresh under FOR NO KEY UPDATE, so a stylist deleted
+    by a concurrent request is a 404 here, not a failed write later. That mode does not
+    block foreign-key checks from new bookings (FOR KEY SHARE).
+    """
+    stmt = (
+        select(User)
+        .where(User.id == stylist_id)
+        .execution_options(populate_existing=True)
+    )
+    if lock:
+        stmt = stmt.with_for_update(key_share=True)
+    stylist = (await session.execute(stmt)).scalar_one_or_none()
     if stylist is None or stylist.role != UserRole.STYLIST or stylist.salon_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="stylist not found"
         )
     await get_owned_salon(session, stylist.salon_id, owner)
     return stylist
+
+
+async def update_stylist(
+    session: AsyncSession, stylist_id: uuid.UUID, owner: User, data: StylistUpdate
+) -> User:
+    stylist = await _get_owned_stylist(session, stylist_id, owner, lock=True)
+    for field, value in data.model_dump(exclude_unset=True).items():
+        # An explicit null only means "clear" for the optional image; a null name is
+        # ignored, as in the salon update.
+        if value is not None or field == "image_url":
+            setattr(stylist, field, value)
+    session.add(stylist)
+    await session.commit()
+    await session.refresh(stylist)
+    return stylist
+
+
+async def delete_stylist(
+    session: AsyncSession, stylist_id: uuid.UUID, owner: User
+) -> None:
+    """Delete a stylist, unless a booking still references them (409).
+
+    Their availability rules and service links go with them (`ON DELETE CASCADE`);
+    bookings keep their stylist (`ON DELETE RESTRICT`). The database decides, so a
+    booking created at the same moment can't slip past a check.
+    """
+    stylist = await _get_owned_stylist(session, stylist_id, owner)
+    try:
+        await session.delete(stylist)
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        if getattr(exc.orig, "sqlstate", None) != FOREIGN_KEY_VIOLATION:
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This stylist has bookings and cannot be deleted.",
+        ) from None
 
 
 async def set_stylist_services(
@@ -95,12 +145,9 @@ async def set_stylist_services(
     service_ids: list[uuid.UUID],
 ) -> list[uuid.UUID]:
     """Replace the set of services a stylist offers (idempotent)."""
-    stylist = await _get_owned_stylist(session, stylist_id, owner)
-    # Serialize concurrent replaces for this stylist (delete-then-insert would
-    # otherwise collide on the composite primary key).
-    await session.execute(
-        select(User.id).where(User.id == stylist_id).with_for_update()
-    )
+    # The lock serializes concurrent replaces for this stylist (delete-then-insert
+    # would otherwise collide on the composite primary key).
+    stylist = await _get_owned_stylist(session, stylist_id, owner, lock=True)
     wanted = set(service_ids)
     if wanted:
         result = await session.execute(

@@ -47,7 +47,7 @@ All money values are integers in **kobo** (divide by 100 for naira). Times are s
 | auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` |
 | salons and services | CRUD, owner only for writes, public paginated reads |
 | my salons | `GET /salons/mine` (owner only: 401 without a token, 403 for other roles) |
-| stylists | created by the salon owner, service assignment |
+| stylists | created by the salon owner, service assignment, `PATCH /stylists/{id}` (name, image_url) and `DELETE /stylists/{id}` (salon owner only, any salon status; 409 if the stylist has bookings) |
 | availability | owner sets rules, `GET` reads them |
 | slots | `GET /stylists/{id}/slots` (any signed-in user; 401 without a token) |
 | bookings | `POST /bookings`, `GET /bookings`, `GET /bookings/{id}`, `POST /bookings/{id}/pay`, `POST /bookings/{id}/cancel` |
