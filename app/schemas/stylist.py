@@ -15,6 +15,16 @@ class StylistCreate(BaseModel):
     image_url: ImageUrl | None = None
 
 
+class StylistUpdate(BaseModel):
+    """Owner edits. Email and password are not editable here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Name | None = None
+    # An explicit null clears the photo.
+    image_url: ImageUrl | None = None
+
+
 class StylistResponse(BaseModel):
     """Owner-facing view of a stylist."""
 

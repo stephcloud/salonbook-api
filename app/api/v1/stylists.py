@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import (
     CurrentUser,
@@ -26,6 +26,7 @@ from app.schemas.stylist import (
     StylistResponse,
     StylistServicesResponse,
     StylistServicesUpdate,
+    StylistUpdate,
 )
 from app.services import availability as availability_service
 from app.services import slots as slot_service
@@ -57,6 +58,22 @@ async def list_stylists(
     return await stylist_service.list_salon_stylists(
         session, salon_id, viewer, page.limit, page.offset
     )
+
+
+@router.patch("/stylists/{stylist_id}", response_model=StylistResponse)
+async def update_stylist(
+    stylist_id: uuid.UUID, data: StylistUpdate, session: SessionDep, owner: Owner
+) -> StylistResponse:
+    stylist = await stylist_service.update_stylist(session, stylist_id, owner, data)
+    return StylistResponse.model_validate(stylist)
+
+
+@router.delete("/stylists/{stylist_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_stylist(
+    stylist_id: uuid.UUID, session: SessionDep, owner: Owner
+) -> Response:
+    await stylist_service.delete_stylist(session, stylist_id, owner)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put("/stylists/{stylist_id}/services", response_model=StylistServicesResponse)
