@@ -4,6 +4,8 @@ from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 MIN_CRON_SECRET_LENGTH = 32
 
@@ -68,8 +70,20 @@ class Settings(BaseSettings):
         # Render hands out postgres:// or postgresql:// URLs; the async engine needs asyncpg.
         for prefix in ("postgres://", "postgresql://"):
             if value.startswith(prefix):
-                return "postgresql+asyncpg://" + value[len(prefix) :]
-        return value
+                value = "postgresql+asyncpg://" + value[len(prefix) :]
+                break
+        # Neon adds libpq's sslmode and channel_binding; asyncpg only takes ssl.
+        try:
+            url = make_url(value)
+        except ArgumentError:
+            # SQLAlchemy's message quotes the URL (password included); keep it out of logs.
+            raise ValueError("DATABASE_URL is not a valid database URL") from None
+        if not {"sslmode", "channel_binding"} & url.query.keys():
+            return value  # untouched, byte for byte
+        query = {k: v for k, v in url.query.items() if k != "channel_binding"}
+        if "sslmode" in query:
+            query["ssl"] = query.pop("sslmode")
+        return url.set(query=query).render_as_string(hide_password=False)
 
     def _is_production(self) -> bool:
         # Fail closed: anything other than an explicit local/test is production.
