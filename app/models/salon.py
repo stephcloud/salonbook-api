@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Double,
     Enum,
     ForeignKey,
     Index,
@@ -27,6 +28,11 @@ class Salon(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("cancellation_hours >= 0", name="ck_salons_cancellation_hours"),
         CheckConstraint("deposit_amount >= 0", name="ck_salons_deposit_amount"),
+        CheckConstraint(
+            "(latitude IS NULL AND longitude IS NULL) OR "
+            "(latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180)",
+            name="ck_salons_location",
+        ),
         Index("ix_salons_created_at_id", "created_at", "id"),
         # The public list filters on status = 'approved' and orders by created_at, id;
         # the admin list filters on any status.
@@ -44,6 +50,13 @@ class Salon(SQLModel, table=True):
     phone: str = Field(max_length=30)
     image_url: str | None = Field(
         default=None, sa_column=Column(String(500), nullable=True)
+    )
+    # Owner-only: the public sees a distance from it, never the raw coordinates.
+    latitude: float | None = Field(
+        default=None, sa_column=Column(Double, nullable=True)
+    )
+    longitude: float | None = Field(
+        default=None, sa_column=Column(Double, nullable=True)
     )
     # New salons wait for an admin. Only the public list/detail, slots, booking and payment
     # look at it; the owner always sees and edits their own salon.
