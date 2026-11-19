@@ -45,7 +45,7 @@ All money values are integers in **kobo** (divide by 100 for naira). Times are s
 | Area | Endpoints |
 |---|---|
 | auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` |
-| salons and services | CRUD, owner only for writes, public paginated reads |
+| salons and services | CRUD, owner only for writes, public paginated reads. `GET /salons` takes optional `area` (address contains) and `lat`/`lng` (adds `distance_km`, nearest first) |
 | my salons | `GET /salons/mine` (owner only: 401 without a token, 403 for other roles) |
 | stylists | created by the salon owner, service assignment, `PATCH /stylists/{id}` (name, image_url) and `DELETE /stylists/{id}` (salon owner only, any salon status; 409 if the stylist has bookings) |
 | availability | owner sets rules, `GET` reads them |
