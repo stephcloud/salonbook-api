@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
@@ -18,6 +19,20 @@ from app.api.v1 import (
 from app.core.config import settings
 from app.db.session import engine
 from app.jobs import expire_pending, retry_refunds
+
+
+class DropQueryString(logging.Filter):
+    """Cut the query string from uvicorn's access log: GET /salons?lat=&lng= is a visitor's
+    location. Uvicorn logs '%s - "%s %s HTTP/%s" %d' with the path third."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            path = str(record.args[2]).split("?", 1)[0]
+            record.args = (*record.args[:2], path, *record.args[3:])
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(DropQueryString())
 
 
 @asynccontextmanager

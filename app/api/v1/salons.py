@@ -11,6 +11,7 @@ from app.schemas.booking import OwnerBookingItem
 from app.schemas.salon import (
     OwnerSalonResponse,
     SalonCreate,
+    SalonListItem,
     SalonResponse,
     SalonUpdate,
 )
@@ -32,11 +33,32 @@ async def create_salon(
     return OwnerSalonResponse.model_validate(salon)
 
 
-# Public: salon listings are read-only discovery data.
-@router.get("", response_model=list[SalonResponse])
-async def list_salons(session: SessionDep, page: PaginationDep) -> list[SalonResponse]:
-    salons = await salon_service.list_salons(session, page.limit, page.offset)
-    return [SalonResponse.model_validate(s) for s in salons]
+# Public: salon listings are read-only discovery data. exclude_unset keeps distance_km
+# out of the response unless lat and lng were sent. Never log lat/lng: a visitor's location.
+@router.get("", response_model=list[SalonListItem], response_model_exclude_unset=True)
+async def list_salons(
+    session: SessionDep,
+    page: PaginationDep,
+    area: Annotated[str | None, Query(max_length=255)] = None,
+    lat: Annotated[float | None, Query(ge=-90, le=90)] = None,
+    lng: Annotated[float | None, Query(ge=-180, le=180)] = None,
+) -> list[SalonListItem]:
+    if (lat is None) != (lng is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="'lat' and 'lng' must be sent together",
+        )
+    near = None if lat is None or lng is None else (lat, lng)
+    rows = await salon_service.list_salons(
+        session, page.limit, page.offset, area=(area or "").strip(), near=near
+    )
+    items = []
+    for salon, distance_km in rows:
+        item = SalonListItem.model_validate(salon)
+        if near:
+            item.distance_km = distance_km
+        items.append(item)
+    return items
 
 
 # The signed-in owner's own salons. Declared before "/{salon_id}" so "mine" is not
