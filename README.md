@@ -123,7 +123,7 @@ New salons start `pending`, so the script needs an admin to approve its throwawa
 
 ## Deployment
 
-Render web service (Docker, Frankfurt, free tier) with Render Postgres and Key Value (Redis). The Dockerfile runs `alembic upgrade head` on container start, then uvicorn on `$PORT`. Merging to `main` redeploys automatically. Set the Paystack test-mode webhook URL to `https://<service>.onrender.com/api/v1/payments/webhook`.
+Render web service (Docker, Frankfurt, free tier) with Neon Postgres and Render Key Value (Redis). `DATABASE_URL` can be Neon's connection string as given (`sslmode` and `channel_binding` are converted for asyncpg) or the `postgresql://...?ssl=require` form. The Dockerfile runs `alembic upgrade head` on every container start, then uvicorn on `$PORT`. Merging to `main` redeploys automatically. Set the Paystack test-mode webhook URL to `https://<service>.onrender.com/api/v1/payments/webhook`.
 
 ## Security
 
