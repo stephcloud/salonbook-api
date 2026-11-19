@@ -41,6 +41,8 @@ async def test_owner_sees_only_their_own_salons(
             "cancellation_hours": 24,
             "deposit_amount": SALON["deposit_amount"],
             "status": "approved",
+            "latitude": None,
+            "longitude": None,
         }
     assert by_id[str(first.id)]["name"] == "First"
     assert by_id[str(second.id)]["name"] == "Second"
