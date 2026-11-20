@@ -2,7 +2,7 @@ import math
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import ColumnElement, func, null, select
+from sqlalchemy import ColumnElement, case, func, null, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.salon import Salon, SalonStatus
@@ -46,8 +46,9 @@ def _distance_km(lat: float, lng: float) -> ColumnElement[float]:
     a = func.power(func.sin(half_dlat), 2) + math.cos(math.radians(lat)) * func.cos(
         func.radians(Salon.latitude)
     ) * func.power(func.sin(half_dlng), 2)
-    # least(): rounding can push `a` a hair above 1 near antipodes, and asin(>1) errors.
-    return 2 * EARTH_RADIUS_KM * func.asin(func.sqrt(func.least(a, 1.0)))
+    # Clamp: rounding can push `a` a hair above 1 near antipodes, and asin(>1) errors.
+    # Not least(): Postgres' LEAST skips NULLs, turning "no location" into 20015 km.
+    return 2 * EARTH_RADIUS_KM * func.asin(func.sqrt(case((a > 1.0, 1.0), else_=a)))
 
 
 async def list_salons(
