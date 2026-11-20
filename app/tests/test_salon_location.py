@@ -4,6 +4,7 @@ import logging
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import DropQueryString
@@ -98,6 +99,17 @@ async def test_update_rejects_half_a_location(
     resp = await db_client.patch(f"{SALONS}/{salon.id}", json=body, headers=headers)
     assert resp.status_code == 422
     assert [e["loc"] for e in resp.json()["detail"]] == [["body", bad_field]]
+
+
+@pytest.mark.parametrize(("lat", "lng"), [(6.5, None), (None, 3.4)])
+async def test_db_rejects_half_a_location(
+    db_session: AsyncSession, lat: float | None, lng: float | None
+) -> None:
+    # The last line of defence for writes that skip the API (scripts, admin SQL).
+    owner, _ = await make_user(db_session)
+    with pytest.raises(IntegrityError, match="ck_salons_location"):
+        await make_salon(db_session, owner, latitude=lat, longitude=lng)
+    await db_session.rollback()
 
 
 async def test_only_the_owner_can_set_location(

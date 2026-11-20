@@ -39,8 +39,11 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_salons_location",
         "salons",
+        # The IS NOT NULLs matter: a CHECK that evaluates to NULL passes, so without them
+        # (6.5, NULL) would be accepted.
         "(latitude IS NULL AND longitude IS NULL) OR "
-        "(latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180)",
+        "(latitude IS NOT NULL AND longitude IS NOT NULL"
+        " AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180)",
     )
 
 

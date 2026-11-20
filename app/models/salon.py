@@ -28,9 +28,11 @@ class Salon(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("cancellation_hours >= 0", name="ck_salons_cancellation_hours"),
         CheckConstraint("deposit_amount >= 0", name="ck_salons_deposit_amount"),
+        # Keep in sync with migration 0015. The IS NOT NULLs matter: a NULL CHECK passes.
         CheckConstraint(
             "(latitude IS NULL AND longitude IS NULL) OR "
-            "(latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180)",
+            "(latitude IS NOT NULL AND longitude IS NOT NULL"
+            " AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180)",
             name="ck_salons_location",
         ),
         Index("ix_salons_created_at_id", "created_at", "id"),
