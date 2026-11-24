@@ -1,4 +1,4 @@
-"""Migrations 0013/0014 on a database that already has data.
+"""Migrations 0013-0015 on a database that already has data.
 
 The normal suite builds its schema from the models, so it never runs a migration. This
 test creates its own scratch database on the test server, migrates it to 0012, adds a
@@ -113,10 +113,20 @@ async def test_existing_salons_stay_approved_and_new_ones_start_pending(
                 )
             )
         ).all()
+        old_location = (
+            await conn.execute(
+                text("SELECT latitude, longitude FROM salons WHERE id = :id"),
+                {"id": OLD_SALON_ID},
+            )
+        ).one()
         version = await conn.scalar(text("SELECT version_num FROM alembic_version"))
     await engine.dispose()
 
     assert old == "approved"  # existing salons keep working after the deploy
     assert new == "pending"  # new ones wait for an admin
     assert "admin" in roles
-    assert version == "0014"
+    assert tuple(old_location) == (
+        None,
+        None,
+    )  # 0015: no location until the owner sets one
+    assert version == "0015"

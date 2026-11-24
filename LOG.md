@@ -239,3 +239,15 @@ Other deferred ideas live in each entry's **Later** list (Day 7, Day 8 Stage A a
   - **A stylist with any booking can never be deleted,** even a cancelled one, and there is no way to retire them: they stay on the public list. A "deactivate" flag (hide from the list and slots, keep history) is the follow-up.
   - **403 vs 404 shows which ids are stylists** at another salon. UUIDs make it low risk; it matches the existing endpoints.
   - `FOREIGN_KEY_VIOLATION` is defined in both `services/services.py` and `services/bookings.py`; move it to one shared place.
+
+## Day 17: salon location and area search
+
+- **Did:** branch `feat/salon-location`. Migration 0015 adds nullable `salons.latitude`/`longitude` (double precision, no default, no backfill) and `ck_salons_location` (both NULL, or both set and in range), under `lock_timeout = 5s`. Owners set them on POST/PATCH as a pair (422 on the missing field; both `null` clears); only `OwnerSalonResponse` returns them. `GET /salons` takes `area` (trimmed, case-insensitive, autoescaped contains on the address) and `lat`/`lng` (both or neither): haversine in SQL, `distance_km` rounded to 1 decimal, nearest first, location-less last, sorted before LIMIT/OFFSET so pages stay consistent. Without them the order and keys are unchanged (`response_model_exclude_unset`). uvicorn's access log no longer prints query strings. No dependency. `db-reviewer` and `security-reviewer` run: nothing blocking.
+- **Learned:** a model validator can raise `ValidationError.from_exception_data(...)` to put a cross-field error on one field's `loc`.
+- **Stuck on:** the full test run was stopped at 46% by low memory; re-run before merging.
+- **Next:** re-run the full suite, review and push `feat/salon-location`; web: owner location picker and a "near me" sort.
+- **Later:**
+  - **`distance_km` can be trilaterated** to the saved coordinates from a few chosen points. Fine for a public address; snap to a grid or bucket distances if owners might pin a private place.
+  - **Render's edge logs keep `?lat=&lng=`.** Move them to a POST body or header if visitor location must never be stored anywhere.
+  - **There is no name search on `GET /salons`** yet, despite the task brief mentioning one.
+  - Past ~10k salons: `pg_trgm` index on `address` and a bounding-box prefilter for distance.
